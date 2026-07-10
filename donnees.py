@@ -103,6 +103,24 @@ def _mtime(chemin: str) -> float:
 
 
 @st.cache_data(show_spinner=False)
+def _lister_annees_impl(chemin: str, _mtime_cle: float) -> tuple[int, int]:
+    con = _con()
+    row = con.execute("SELECT MIN(annee), MAX(annee) FROM read_parquet(?)", [chemin]).fetchone()
+    return (int(row[0]), int(row[1])) if row and row[0] is not None else (2011, 2025)
+
+
+def lister_annees_disponibles(source: str, chemins: dict[str, str] | None = None) -> tuple[int, int]:
+    """Retourne (annee_min, annee_max) réellement présentes dans le parquet
+    de cette source — pas une plage codée en dur. Mis en cache par
+    (chemin, mtime), même logique que les autres fonctions lister_*."""
+    chemins = chemins or SOURCES_PARQUET
+    chemin = chemins.get(source)
+    if not chemin or not Path(chemin).exists():
+        return (2011, 2025)
+    return _lister_annees_impl(chemin, _mtime(chemin))
+
+
+@st.cache_data(show_spinner=False)
 def _lister_flux_impl(chemin: str, _mtime_cle: float) -> list[str]:
     con = _con()
     df = con.execute("SELECT DISTINCT flux FROM read_parquet(?) ORDER BY flux", [chemin]).fetchdf()
@@ -119,6 +137,54 @@ def lister_flux_disponibles(source: str, chemins: dict[str, str] | None = None) 
     if not chemin or not Path(chemin).exists():
         return []
     return _lister_flux_impl(chemin, _mtime(chemin))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# RÉFÉRENTIEL GÉOGRAPHIQUE — correspondance code -> nom lisible, + statut actif
+# ═══════════════════════════════════════════════════════════════════════════
+# Cherche referentiel_geo.csv (colonnes : code, nom, actif) déposé par
+# l'utilisateur à la racine du repo. Si absent, repli propre : le code sert
+# de "nom" et aucun code n'est considéré inactif (pas de filtrage) — pas de
+# flag à activer/désactiver, détection automatique comme le reste des
+# résolutions de chemins.
+_CHEMIN_REFERENTIEL_CSV = _ICI / "referentiel_geo.csv"
+
+
+@st.cache_data(show_spinner=False)
+def _charger_referentiel_geo(_mtime_cle: float) -> tuple[dict[str, str], set[str]]:
+    """Retourne (noms {code: nom}, codes_inactifs {code, ...})."""
+    if _CHEMIN_REFERENTIEL_CSV.exists():
+        try:
+            df_ref = pd.read_csv(_CHEMIN_REFERENTIEL_CSV, dtype=str)
+            col_code = next((c for c in df_ref.columns if c.lower() in ("code", "code_geo")), None)
+            col_nom = next((c for c in df_ref.columns if c.lower() in ("nom", "name", "nom_pays")), None)
+            col_actif = next((c for c in df_ref.columns if c.lower() == "actif"), None)
+            if col_code and col_nom:
+                noms = dict(zip(df_ref[col_code], df_ref[col_nom]))
+                inactifs = set()
+                if col_actif:
+                    inactifs = set(df_ref.loc[df_ref[col_actif].astype(str).str.lower() == "false", col_code])
+                return noms, inactifs
+        except Exception:
+            pass
+    return {}, set()
+
+
+def referentiel_geo() -> dict[str, str]:
+    """Dict {code: nom}. Vide si aucun référentiel trouvé — les appelants
+    doivent utiliser .get(code, code) pour retomber sur le code par défaut."""
+    mtime = _mtime(str(_CHEMIN_REFERENTIEL_CSV)) if _CHEMIN_REFERENTIEL_CSV.exists() else 0.0
+    return _charger_referentiel_geo(mtime)[0]
+
+
+def codes_geo_inactifs() -> set[str]:
+    """Ensemble des codes marqués actif=False dans le référentiel — vide
+    si aucun référentiel trouvé (aucun filtrage dans ce cas)."""
+    mtime = _mtime(str(_CHEMIN_REFERENTIEL_CSV)) if _CHEMIN_REFERENTIEL_CSV.exists() else 0.0
+    return _charger_referentiel_geo(mtime)[1]
+
+
+REFERENTIEL_GEO_DISPONIBLE = _CHEMIN_REFERENTIEL_CSV.exists()
 
 
 @st.cache_data(show_spinner=False)
@@ -149,12 +215,25 @@ def lister_partenaires(source: str, chemins: dict[str, str] | None = None) -> li
     partenaire n'apparaît que dans un sous-ensemble) plutôt que codée en
     dur par source — ISQ a un mélange pays/états américains comme
     partenaires, CIMT a un mélange pays/états, BACI n'a que des pays. Mis
-    en cache par (chemin, mtime), même logique que lister_flux_disponibles."""
+    en cache par (chemin, mtime), même logique que lister_flux_disponibles.
+
+    Les codes marqués inactifs dans le référentiel géo (0 échange confirmé
+    empiriquement) sont exclus de la liste, même s'ils apparaissent par
+    exception dans les données — ce filtre s'ajoute à celui, déjà en place,
+    qui ne retient que les codes réellement présents dans CETTE source."""
     chemins = chemins or SOURCES_PARQUET
     chemin = chemins.get(source)
     if not chemin or not Path(chemin).exists():
         return []
-    return _lister_partenaires_impl(chemin, _mtime(chemin))
+    partenaires = _lister_partenaires_impl(chemin, _mtime(chemin))
+    inactifs = codes_geo_inactifs()
+    if inactifs:
+        partenaires = [(c, t) for c, t in partenaires if c not in inactifs]
+    return partenaires
+
+
+TOUS_PARTENAIRES = "🌐 TOUS LES PAYS (excl. détail États-Unis, évite le double comptage)"
+TOUS_PRODUITS = "🌐 TOUS LES PRODUITS (total, tous codes HS confondus)"
 
 
 def extraire(
@@ -163,6 +242,7 @@ def extraire(
     flux: list[str] | None = None,
     partenaires: list[str] | None = None,
     hs6_prefixes: list[str] | None = None,
+    agreger_partenaires: bool = False,
     chemins: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     """
@@ -171,7 +251,15 @@ def extraire(
     inter-source n'est faite ici (unités non harmonisées, voir module docstring).
 
     partenaires : filtre sur origine OU destination (peu importe le sens du flux)
-    hs6_prefixes : filtre par préfixe de code HS (ex: "87" matche tout HS2=87)
+    hs6_prefixes : filtre par préfixe de code HS (ex: "87" matche tout HS2=87) —
+        la sommation au niveau du préfixe se fait ensuite dans regrouper(),
+        pas ici (cette fonction ne fait que filtrer, jamais sommer)
+    agreger_partenaires : si True, ignore `partenaires` et filtre plutôt sur
+        le type de l'entité "partenaire" (le côté du flux qui n'est PAS
+        l'entité maison) = PAYS uniquement, excluant les entités ETAT_US —
+        ces dernières sont déjà comptées dans l'agrégat pays (ex: USA) et
+        les resommer créerait un double comptage. Le vrai regroupement en
+        une seule ligne se fait dans regrouper(), pas ici.
     chemins : override des chemins par défaut (utile pour les tests, ou GCS)
     """
     chemins = chemins or SOURCES_PARQUET
@@ -194,11 +282,24 @@ def extraire(
         if flux:
             conditions.append(f"flux IN ({','.join('?' * len(flux))})")
             params.extend(flux)
-        if partenaires:
+
+        if agreger_partenaires:
+            # Le "partenaire" est le côté destination pour DE/TE, origine
+            # pour TI — seul ce côté doit être restreint à PAYS (l'autre
+            # côté est l'entité maison, dont le type n'a pas à être filtré).
+            conditions.append("""
+                (
+                    (flux IN ('DE','TE') AND type_dest = 'PAYS')
+                    OR (flux = 'TI' AND type_ori = 'PAYS')
+                    OR (flux NOT IN ('DE','TE','TI') AND type_ori = 'PAYS' AND type_dest = 'PAYS')
+                )
+            """)
+        elif partenaires:
             ph = ",".join("?" * len(partenaires))
             conditions.append(f"(origine IN ({ph}) OR destination IN ({ph}))")
             params.extend(partenaires)
             params.extend(partenaires)
+
         if hs6_prefixes:
             sous_conditions = " OR ".join(["hs6 LIKE ?"] * len(hs6_prefixes))
             conditions.append(f"({sous_conditions})")
@@ -217,6 +318,71 @@ def extraire(
             "destination", "type_dest", "hs6", "valeur",
         ])
     return pd.concat(frames, ignore_index=True)
+
+
+def regrouper(
+    df: pd.DataFrame,
+    hs6_prefixes: list[str] | None = None,
+    agreger_produits: bool = False,
+    agreger_partenaires: bool = False,
+) -> pd.DataFrame:
+    """
+    Somme le résultat d'extraire() au bon niveau d'agrégation — c'est ICI
+    que la correction du bug SH4/SH2 se fait (extraire() ne fait QUE
+    filtrer, jamais sommer, pour rester une fonction simple et prévisible).
+
+    Niveau de regroupement des CODES HS :
+      - agreger_produits=True        -> une seule ligne 'TOUS' (somme totale)
+      - hs6_prefixes fourni           -> une ligne par préfixe saisi (ex: taper
+                                          "8703" donne UNE ligne sommant tous
+                                          les HS6 sous "8703", pas le détail)
+      - ni l'un ni l'autre             -> pas de regroupement, détail HS6 complet
+                                          (comportement par défaut, inchangé)
+
+    Niveau de regroupement des PARTENAIRES :
+      - agreger_partenaires=True     -> une seule ligne 'TOUS_PAYS' par
+                                          (source, flux, hs_groupe, annee)
+      - sinon                          -> pas de regroupement, une ligne par
+                                          partenaire (comportement par défaut)
+
+    Si aucune agrégation n'est demandée, retourne df inchangé (identité).
+    """
+    if df.empty:
+        return df
+
+    df = df.copy()
+
+    # ── Niveau HS ────────────────────────────────────────────────────────
+    if agreger_produits:
+        df["hs6"] = "TOUS"
+    elif hs6_prefixes:
+        # Assigne chaque ligne au préfixe saisi le plus SPÉCIFIQUE (le plus
+        # long) qu'elle matche — permet de mélanger des préfixes de
+        # longueurs différentes (ex: "8703,27") sans ambiguïté.
+        prefixes_tries = sorted(hs6_prefixes, key=len, reverse=True)
+        groupe = pd.Series(pd.NA, index=df.index, dtype="object")
+        for prefixe in prefixes_tries:
+            mask = groupe.isna() & df["hs6"].str.startswith(prefixe)
+            groupe[mask] = prefixe
+        df["hs6"] = groupe.fillna(df["hs6"])  # sécurité : ligne non matchée garde son hs6
+
+    # ── Niveau partenaire ────────────────────────────────────────────────
+    if agreger_partenaires:
+        # Le côté "maison" (province/état fixe) reste tel quel, le côté
+        # "partenaire" devient un label agrégé générique.
+        est_de_te = df["flux"].isin(["DE", "TE"])
+        df.loc[est_de_te, "destination"] = "TOUS_PAYS"
+        df.loc[est_de_te, "type_dest"] = "PAYS"
+        df.loc[~est_de_te, "origine"] = "TOUS_PAYS"
+        df.loc[~est_de_te, "type_ori"] = "PAYS"
+
+    # ── Sommation, seulement si une agrégation a effectivement été demandée
+    if agreger_produits or hs6_prefixes or agreger_partenaires:
+        cles_groupe = ["annee", "source", "flux", "origine", "type_ori",
+                        "destination", "type_dest", "hs6"]
+        df = df.groupby(cles_groupe, as_index=False)["valeur"].sum()
+
+    return df
 
 
 # ═══════════════════════════════════════════════════════════════════════════

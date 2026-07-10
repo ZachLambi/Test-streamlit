@@ -1,0 +1,326 @@
+code,nom,actif
+A1,Réimportations (Canada),True
+A2,Haute Mer,False
+C542,Afghanistan,True
+C419,Afrique du Sud,True
+C242,Albanie,True
+C443,Algérie,True
+C155,Allemagne,True
+C258,Allemagne de l'est (ancienne),False
+C156,Andorre,True
+C446,Angola,True
+C830,Anguilla,True
+C462,Antarctique,True
+C832,Antigua et Barbuda,True
+C876,Antilles néerlandaises,True
+C369,Arabie saoudite,True
+C744,Argentine,True
+C280,Arménie,True
+C877,Aruba,True
+C614,Australie,True
+C143,Autriche,True
+C281,Azerbaïdjan,True
+C813,Bahamas,True
+C313,Bahreïn,True
+C512,Bangladesh,True
+C822,Barbade,True
+C144,Belgique,True
+C815,Bermudes,True
+C544,Bhoutan,True
+C747,Bolivie,True
+C872,"Bonaire, Saint-Eustache et Saba",True
+C278,Bosnie-Herzégovine,True
+C430,Botswana,True
+C525,Brunéi Darussalam,True
+C752,Brésil,True
+C245,Bulgarie,True
+C457,Burkina Faso,True
+C448,Burundi,True
+C285,Bélarus,True
+C817,Bélize,True
+C455,Bénin,True
+C477,Cabo Verde,True
+C548,Cambodge,True
+C447,Cameroun,True
+C474,Ceuta et Melilla,False
+C755,Chili,True
+C553,Chine,True
+C316,Chypre,True
+C758,Colombie,True
+C460,Comores,True
+C452,Congo,True
+C563,Corée du Nord,True
+C564,Corée du Sud,True
+C845,Costa Rica,True
+C290,Croatie,True
+C848,Cuba,True
+C870,Curaçao,True
+C466,Côte d'Ivoire,True
+C149,Danemark,True
+C459,Djibouti,True
+C833,Dominique,True
+C857,El Salvador,True
+C182,Espagne,True
+C282,Estonie,True
+C617,Fidji,True
+C153,Finlande,True
+C154,France,True
+C295,Fédération de Russie,True
+C463,Gabon,True
+C413,Gambie,True
+C720,Georgie du Sud-et-les Îles Sandwich du Sud,True
+C414,Ghana,True
+C115,Gibraltar,True
+C834,Grenade,True
+C3,Groenland,True
+C159,Grèce,True
+C862,Guadeloupe,True
+C666,Guam,True
+C864,Guatemala,True
+C102,Guernsey,False
+C465,Guinée,True
+C480,Guinée équatoriale,True
+C475,Guinée-Bissau,True
+C716,Guyane,True
+C766,Guyane française,True
+C291,Géorgie,True
+C867,Haïti,True
+C869,Honduras,True
+C516,Hong Kong,True
+C262,Hongrie,True
+C519,Inde,True
+C556,Indonésie,True
+C352,Irak,True
+C347,Iran,True
+C117,Irlande,True
+C163,Islande,True
+C355,Israël,True
+C167,Italie,True
+C824,Jamaïque,True
+C559,Japon,True
+C103,Jersey,False
+C358,Jordanie,True
+C292,Kazakhstan,True
+C293,Kirghizistan,True
+C625,Kiribati,True
+C273,Kosovo,True
+C359,Koweït,True
+C415,Kénya,True
+C549,Laos,True
+C283,Lettonie,True
+C363,Liban,True
+C366,Libye,True
+C468,Libéria,True
+C187,Liechtenstein,True
+C284,Lituanie,True
+C170,Luxembourg,True
+C431,Lésotho,True
+C575,Macao,True
+C276,Macédoine (Ex-République yougoslave de Macédoine),True
+C469,Madagascar,True
+C524,Malaisie,True
+C416,Malawi,True
+C514,Maldives,True
+C453,Mali,True
+C119,Malte,True
+C473,Maroc,True
+C863,Martinique,True
+C417,Maurice,True
+C472,Mauritanie,True
+C470,Mayotte,True
+C874,Mexique,True
+C157,Monaco,True
+C552,Mongolie,True
+C829,Montserrat,True
+C275,Monténégro,True
+C476,Mozambique,True
+C545,Myanmar,True
+C420,Namibie,True
+C611,Nauru,True
+C879,Nicaragua,True
+C454,Niger,True
+C418,Nigéria,True
+C620,Niué,True
+C176,Norvège,True
+C653,Nouvelle-Calédonie,True
+C622,Nouvelle-Zélande,True
+C565,Népal,True
+C368,Oman,True
+C426,Ouganda,True
+C298,Ouzbékistan,True
+C527,Pakistan,True
+C669,Palaos,True
+C883,Panama,True
+C613,Papouasie-Nouvelle-Guinée,True
+C769,Paraguay,True
+C173,Pays-Bas,True
+C567,Philippines,True
+C626,Pitcairn,True
+C277,Pologne,True
+C654,Polynésie française,True
+C178,Portugal,True
+C774,Pérou,True
+C323,Qatar,True
+C279,Roumanie,True
+C101,Royaume-Uni,True
+C456,Rwanda,True
+C450,République centrafricaine,True
+C294,République de Moldova,True
+C855,République dominicaine,True
+C449,République démocratique du Congo,True
+C247,République tchèque,True
+C425,République-Unie de Tanzanie,True
+C458,Réunion,True
+C485,Sahara occidental,True
+C875,Saint-Barthélemy,True
+C168,Saint-Marin,True
+C873,Saint-Martin (partie française),True
+C871,Saint-Martin (partie néerlandaise),True
+C6,Saint-Pierre-et-Miquelon,True
+C169,Saint-Siège (Vatican),True
+C836,Saint-Vincent-et-Grenadines,True
+C433,Sainte-Hélène,True
+C835,Sainte-Lucie,True
+C628,Samoa,True
+C667,Samoa américaines,True
+C478,Sao Tomé-et-Principe,True
+C274,Serbie,True
+C435,Seychelles,True
+C423,Sierra Léone,True
+C528,Singapour,True
+C248,Slovaquie,True
+C289,Slovénie,True
+C374,Somalie,True
+C377,Soudan,True
+C378,Soudan du Sud,True
+C513,Sri Lanka,True
+C831,St-Kitts-et-Névis,True
+C186,Suisse,True
+C777,Suriname,True
+C185,Suède,True
+C432,Swaziland,True
+C379,Syrie,True
+C482,Sénégal,True
+C296,Tadjikistan,True
+C578,Taïwan,True
+C451,Tchad,True
+C246,Tchécoslovaquie (ancienne),False
+C461,Terres australes françaises,True
+C434,Territoire britannique de l'Océan Indien,True
+C583,Thaïlande,True
+C557,Timor-Leste,True
+C486,Togo,True
+C619,Tokelau,True
+C627,Tonga,True
+C828,Trinité-et-Tobago,True
+C487,Tunisie,True
+C297,Turkménistan,True
+C382,Turquie,True
+C624,Tuvalu,True
+C287,U.R.S.S. (ancienne),False
+C286,Ukraine,True
+C782,Uruguay,True
+C652,Vanuatu,True
+C586,Vietnam,True
+C785,Vénézuela,True
+C651,Wallis et Futuna,True
+C288,Yougoslavie - Serbie et Monténégro,False
+C386,Yémen,True
+C375,"Yémen, démocratique",True
+C428,Zambie,True
+C422,Zimbabwe,True
+C385,Égypte,True
+C328,Émirats arabes unis,True
+C763,Équateur,True
+C345,Érythrée,True
+C356,État de Palestine,True
+C672,États fédérés de Micronésie,True
+C9,États-Unis,True
+C344,Éthiopie,True
+C464,Île Bouvet,True
+C615,Île Christmas,True
+C616,Île Heard et Îles McDonald,True
+C612,Île Norfolk,True
+C177,Île Svalbard,True
+C104,Île de Man,True
+C825,Îles Caïmanes,True
+C621,Îles Cook,True
+C719,Îles Falkland (Malouines),True
+C150,Îles Féroé,True
+C670,Îles Mariannes du Nord,True
+C671,Îles Marshall,True
+C623,Îles Salomon,True
+C827,Îles Turks et Caïques,True
+C823,Îles Vierges britanniques,True
+C152,Îles d'Aland,True
+C610,Îles des Cocos (Keeling),True
+C673,Îles du Pacifique,False
+C668,"Îles mineures éloignées, États-Unis",True
+C124,Canada,True
+SAL,Alabama,True
+SAK,Alaska,True
+SAZ,Arizona,True
+SAR,Arkansas,True
+SUS,Autres États des É.-U. (non identifiés),True
+SCA,Californie,True
+SNC,Caroline du Nord,True
+SSC,Caroline du Sud,True
+SCO,Colorado,True
+SDC,Columbia (district de),True
+SCT,Connecticut,True
+SND,Dakota du Nord,True
+SSD,Dakota du Sud,True
+SDE,Delaware,True
+SFL,Floride,True
+SGA,Géorgie,True
+SHI,Hawaii,True
+SID,Idaho,True
+SIL,Illinois,True
+SIN,Indiana,True
+SIA,Iowa,True
+SKS,Kansas,True
+SKY,Kentucky,True
+SLA,Louisiane,True
+SME,Maine,True
+SMD,Maryland,True
+SMA,Massachusetts,True
+SMI,Michigan,True
+SMN,Minnesota,True
+SMS,Mississippi,True
+SMO,Missouri,True
+SMT,Montana,True
+SNE,Nebraska,True
+SNV,Nevada,True
+SNH,New Hampshire,True
+SNJ,New Jersey,True
+SNY,New York,True
+SNM,Nouveau-Mexique,True
+SOH,Ohio,True
+SOK,Oklahoma,True
+SOR,Oregon,True
+SPA,Pennsylvanie,True
+SPR,Porto Rico,True
+SRI,Rhode Island,True
+STN,Tennessee,True
+STX,Texas,True
+SUT,Utah,True
+SVT,Vermont,True
+SVA,Virginie,True
+SWV,Virginie de L'ouest,True
+SWA,Washington,True
+SWI,Wisconsin,True
+SWY,Wyoming,True
+SVI,Îles Vierges (É.-U.),True
+PPE,Île-du-Prince-Édouard,True
+PNL,Terre-Neuve-et-Labrador,True
+PNS,Nouvelle-Écosse,True
+PNB,Nouveau-Brunswick,True
+PQC,Québec,True
+PON,Ontario,True
+PMB,Manitoba,True
+PSK,Saskatchewan,True
+PAB,Alberta,True
+PBC,Colombie-Britannique,True
+PYT,Yukon,True
+PNT,Territoires du Nord-Ouest,True
+PNU,Nunavut,True
