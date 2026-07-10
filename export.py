@@ -8,8 +8,6 @@ remanier dans Excel avant de pouvoir l'utiliser.
 
 from io import BytesIO
 import pandas as pd
-from openpyxl.styles import Font, PatternFill, Alignment
-from openpyxl.utils import get_column_letter
 
 NOMS_COLONNES_AFFICHAGE = {
     "annee": "Année", "source": "Source", "flux": "Flux",
@@ -25,7 +23,14 @@ NOMS_COLONNES_AFFICHAGE = {
 def exporter_excel(df: pd.DataFrame, unites_par_source: dict[str, str]) -> bytes:
     """Génère un .xlsx formaté : en-têtes en gras avec fond, colonnes
     ajustées à leur contenu, volets gelés sous l'en-tête, tri par année.
-    Retourne les bytes du fichier (prêt pour un bouton de téléchargement)."""
+    Retourne les bytes du fichier (prêt pour un bouton de téléchargement).
+
+    Import openpyxl différé (dans la fonction, pas en haut du module) —
+    évite un conflit bas niveau observé entre openpyxl et DuckDB quand les
+    deux sont chargés dans le même contexte avant tout appel Excel réel."""
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
     df_export = df.rename(columns=NOMS_COLONNES_AFFICHAGE)
     if "Année" in df_export.columns:
         df_export = df_export.sort_values("Année")
