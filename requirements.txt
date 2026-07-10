@@ -1,0 +1,6 @@
+streamlit>=1.59
+duckdb
+pyarrow
+pandas
+openpyxl
+numpy
