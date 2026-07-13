@@ -187,52 +187,69 @@ def codes_geo_inactifs() -> set[str]:
 REFERENTIEL_GEO_DISPONIBLE = _CHEMIN_REFERENTIEL_CSV.exists()
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# CONFIGURATION DES "CÔTÉS" PAR SOURCE
+# ═══════════════════════════════════════════════════════════════════════════
+# Côté A = domestique (province/état canadien-américain fixe ou variable),
+# Côté B = partenaire international. Types déterminés par la structure
+# réelle de chaque source (documentée dans le changelog), pas par une
+# heuristique de comptage — celle-ci ne fonctionnait que par coïncidence
+# pour ISQ (seule source où le côté A a une valeur unique, Québec).
+#
+# Une source est "symétrique" (BACI) quand type_a == type_b : les deux
+# côtés sont interchangeables (pays-à-pays), pas de notion de domestique.
+CONFIG_COTES = {
+    "ISQ":    {"type_a": {"PROVINCE"},    "type_b": {"PAYS", "ETAT_US"}},
+    "CIMT":   {"type_a": {"PROVINCE_CA"}, "type_b": {"PAYS", "ETAT_US"}},
+    "CENSUS": {"type_a": {"ETAT_US"},     "type_b": {"PAYS"}},
+    "BACI":   {"type_a": {"PAYS"},        "type_b": {"PAYS"}},
+}
+
+
+def source_symetrique(source: str) -> bool:
+    """True pour BACI (pays-à-pays, pas de côté domestique fixe)."""
+    cfg = CONFIG_COTES.get(source, {})
+    return bool(cfg) and cfg.get("type_a") == cfg.get("type_b")
+
+
 @st.cache_data(show_spinner=False)
-def _lister_partenaires_impl(chemin: str, _mtime_cle: float) -> list[tuple[str, str]]:
+def _lister_entites_cote_impl(chemin: str, types_cherches: tuple[str, ...], _mtime_cle: float) -> list[tuple[str, str]]:
     con = _con()
-    df = con.execute("""
+    placeholders = ",".join("?" * len(types_cherches))
+    df = con.execute(f"""
         WITH tous AS (
             SELECT origine AS code, type_ori AS type FROM read_parquet(?)
             UNION ALL
             SELECT destination AS code, type_dest AS type FROM read_parquet(?)
-        ),
-        comptes AS (
-            SELECT code, type, COUNT(*) AS n FROM tous GROUP BY code, type
-        ),
-        total AS (SELECT COUNT(*) AS n FROM read_parquet(?))
-        SELECT c.code, c.type
-        FROM comptes c, total t
-        WHERE c.n < t.n
-        ORDER BY c.type, c.code
-    """, [chemin, chemin, chemin]).fetchdf()
+        )
+        SELECT DISTINCT code, type FROM tous
+        WHERE type IN ({placeholders})
+        ORDER BY type, code
+    """, [chemin, chemin, *types_cherches]).fetchdf()
     return list(df.itertuples(index=False, name=None))
 
 
-def lister_partenaires(source: str, chemins: dict[str, str] | None = None) -> list[tuple[str, str]]:
-    """Retourne les (code, type) des partenaires disponibles pour cette
-    source — PAS l'entité "maison" (ex: P24 pour ISQ). L'entité maison est
-    détectée automatiquement (elle apparaît dans 100% des lignes, un
-    partenaire n'apparaît que dans un sous-ensemble) plutôt que codée en
-    dur par source — ISQ a un mélange pays/états américains comme
-    partenaires, CIMT a un mélange pays/états, BACI n'a que des pays. Mis
-    en cache par (chemin, mtime), même logique que lister_flux_disponibles.
-
-    Les codes marqués inactifs dans le référentiel géo (0 échange confirmé
-    empiriquement) sont exclus de la liste, même s'ils apparaissent par
-    exception dans les données — ce filtre s'ajoute à celui, déjà en place,
-    qui ne retient que les codes réellement présents dans CETTE source."""
+def lister_entites_cote(source: str, cote: str, chemins: dict[str, str] | None = None) -> list[tuple[str, str]]:
+    """Retourne les (code, type) présents pour le côté demandé ('a' ou 'b')
+    de cette source, déterminés par CONFIG_COTES (type de colonne réel),
+    pas par une heuristique. Exclut les codes marqués inactifs dans le
+    référentiel géo. Mis en cache par (chemin, mtime, types cherchés)."""
     chemins = chemins or SOURCES_PARQUET
     chemin = chemins.get(source)
-    if not chemin or not Path(chemin).exists():
+    cfg = CONFIG_COTES.get(source)
+    if not chemin or not Path(chemin).exists() or not cfg:
         return []
-    partenaires = _lister_partenaires_impl(chemin, _mtime(chemin))
+    types_cherches = tuple(sorted(cfg[f"type_{cote.lower()}"]))
+    entites = _lister_entites_cote_impl(chemin, types_cherches, _mtime(chemin))
     inactifs = codes_geo_inactifs()
     if inactifs:
-        partenaires = [(c, t) for c, t in partenaires if c not in inactifs]
-    return partenaires
+        entites = [(c, t) for c, t in entites if c not in inactifs]
+    return entites
 
 
-TOUS_PARTENAIRES = "🌐 TOUS LES PAYS (excl. détail États-Unis, évite le double comptage)"
+TOUS_PARTENAIRES = "Tous les partenaires"
+CATEGORIE_PAYS = "Pays"
+CATEGORIE_ETATS = "États"
 TOUS_PRODUITS = "🌐 TOUS LES PRODUITS (total, tous codes HS confondus)"
 
 
@@ -240,9 +257,11 @@ def extraire(
     sources: list[str],
     annees: list[int] | None = None,
     flux: list[str] | None = None,
-    partenaires: list[str] | None = None,
+    partenaires_a: list[str] | None = None,
+    agreger_a: bool = False,
+    partenaires_b: list[str] | None = None,
+    agreger_b: bool = False,
     hs6_prefixes: list[str] | None = None,
-    agreger_partenaires: bool = False,
     chemins: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     """
@@ -250,16 +269,27 @@ def extraire(
     chacune gardant sa colonne `source` d'origine — aucune agrégation
     inter-source n'est faite ici (unités non harmonisées, voir module docstring).
 
-    partenaires : filtre sur origine OU destination (peu importe le sens du flux)
-    hs6_prefixes : filtre par préfixe de code HS (ex: "87" matche tout HS2=87) —
-        la sommation au niveau du préfixe se fait ensuite dans regrouper(),
-        pas ici (cette fonction ne fait que filtrer, jamais sommer)
-    agreger_partenaires : si True, ignore `partenaires` et filtre plutôt sur
-        le type de l'entité "partenaire" (le côté du flux qui n'est PAS
-        l'entité maison) = PAYS uniquement, excluant les entités ETAT_US —
-        ces dernières sont déjà comptées dans l'agrégat pays (ex: USA) et
-        les resommer créerait un double comptage. Le vrai regroupement en
-        une seule ligne se fait dans regrouper(), pas ici.
+    Deux "côtés" génériques (voir CONFIG_COTES) :
+      - côté A = domestique (province/état) — origine pour DE/TE,
+        destination pour TI. Fixe à une seule valeur pour ISQ (Québec),
+        variable pour CIMT (provinces) et Census (états).
+      - côté B = partenaire international — destination pour DE/TE,
+        origine pour TI. Mélange pays/états pour ISQ/CIMT, pays
+        uniquement pour Census.
+      - Pour une source SYMÉTRIQUE (BACI, pays-à-pays) : côté A et côté B
+        ne correspondent à aucun sens fixe — partenaires_a/partenaires_b
+        filtrent alors sur la PAIRE (un code de chaque liste, peu importe
+        quel côté physique) plutôt que sur une direction.
+
+    partenaires_a / partenaires_b : listes de codes à filtrer sur le côté
+        correspondant. Si un seul des deux est fourni pour une source
+        symétrique, filtre large (l'un ou l'autre camp de la ligne).
+    agreger_a / agreger_b : ignore la liste de codes du côté concerné et
+        indique à regrouper() de sommer ce côté en une seule ligne "TOTAL"
+        (le filtrage réel se fait dans regrouper(), pas ici — côté A n'a
+        qu'un seul type possible par source, rien à restreindre en amont).
+    hs6_prefixes : filtre par préfixe de code HS — la sommation au niveau
+        du préfixe se fait dans regrouper(), pas ici.
     chemins : override des chemins par défaut (utile pour les tests, ou GCS)
     """
     chemins = chemins or SOURCES_PARQUET
@@ -273,6 +303,7 @@ def extraire(
         if not Path(path).exists():
             continue  # source non disponible localement — ignorée silencieusement
 
+        symetrique = source_symetrique(src)
         conditions = []
         params = []
 
@@ -283,22 +314,44 @@ def extraire(
             conditions.append(f"flux IN ({','.join('?' * len(flux))})")
             params.extend(flux)
 
-        if agreger_partenaires:
-            # Le "partenaire" est le côté destination pour DE/TE, origine
-            # pour TI — seul ce côté doit être restreint à PAYS (l'autre
-            # côté est l'entité maison, dont le type n'a pas à être filtré).
-            conditions.append("""
-                (
-                    (flux IN ('DE','TE') AND type_dest = 'PAYS')
-                    OR (flux = 'TI' AND type_ori = 'PAYS')
-                    OR (flux NOT IN ('DE','TE','TI') AND type_ori = 'PAYS' AND type_dest = 'PAYS')
-                )
-            """)
-        elif partenaires:
-            ph = ",".join("?" * len(partenaires))
-            conditions.append(f"(origine IN ({ph}) OR destination IN ({ph}))")
-            params.extend(partenaires)
-            params.extend(partenaires)
+        if symetrique:
+            # BACI-like : pas de côté domestique fixe, filtre sur la PAIRE.
+            if partenaires_a and partenaires_b:
+                ph_a = ",".join("?" * len(partenaires_a))
+                ph_b = ",".join("?" * len(partenaires_b))
+                conditions.append(f"""
+                    (
+                        (origine IN ({ph_a}) AND destination IN ({ph_b}))
+                        OR (origine IN ({ph_b}) AND destination IN ({ph_a}))
+                    )
+                """)
+                params.extend(partenaires_a + partenaires_b + partenaires_b + partenaires_a)
+            elif partenaires_a or partenaires_b:
+                codes = partenaires_a or partenaires_b
+                ph = ",".join("?" * len(codes))
+                conditions.append(f"(origine IN ({ph}) OR destination IN ({ph}))")
+                params.extend(codes + codes)
+        else:
+            # Sources directionnelles (ISQ/CIMT/Census) : côté A = origine
+            # pour DE/TE, destination pour TI ; côté B = l'inverse.
+            if not agreger_a and partenaires_a:
+                ph = ",".join("?" * len(partenaires_a))
+                conditions.append(f"""
+                    (
+                        (flux IN ('DE','TE') AND origine IN ({ph}))
+                        OR (flux = 'TI' AND destination IN ({ph}))
+                    )
+                """)
+                params.extend(partenaires_a + partenaires_a)
+            if not agreger_b and partenaires_b:
+                ph = ",".join("?" * len(partenaires_b))
+                conditions.append(f"""
+                    (
+                        (flux IN ('DE','TE') AND destination IN ({ph}))
+                        OR (flux = 'TI' AND origine IN ({ph}))
+                    )
+                """)
+                params.extend(partenaires_b + partenaires_b)
 
         if hs6_prefixes:
             sous_conditions = " OR ".join(["hs6 LIKE ?"] * len(hs6_prefixes))
@@ -324,7 +377,8 @@ def regrouper(
     df: pd.DataFrame,
     hs6_prefixes: list[str] | None = None,
     agreger_produits: bool = False,
-    agreger_partenaires: bool = False,
+    agreger_a: bool = False,
+    agreger_b: bool = False,
 ) -> pd.DataFrame:
     """
     Somme le résultat d'extraire() au bon niveau d'agrégation — c'est ICI
@@ -339,11 +393,18 @@ def regrouper(
       - ni l'un ni l'autre             -> pas de regroupement, détail HS6 complet
                                           (comportement par défaut, inchangé)
 
-    Niveau de regroupement des PARTENAIRES :
-      - agreger_partenaires=True     -> une seule ligne 'TOUS_PAYS' par
-                                          (source, flux, hs_groupe, annee)
-      - sinon                          -> pas de regroupement, une ligne par
-                                          partenaire (comportement par défaut)
+    Niveau de regroupement des CÔTÉS (A = domestique, B = partenaire) :
+      - agreger_a=True  -> côté domestique sommé en 'TOTAL' (ex: Total Canada
+                            pour CIMT — pas de risque de double comptage ici,
+                            les provinces/états sont mutuellement exclusifs)
+      - agreger_b=True  -> côté partenaire sommé en 'TOTAL', restreint aux
+                            entités de type PAYS (exclut les états déjà
+                            comptés dans l'agrégat pays — évite le double
+                            comptage)
+      - sinon             -> pas de regroupement pour ce côté (comportement
+                              par défaut, une ligne par entité)
+    Les deux peuvent être combinés (ex: Total Canada ET Tous les
+    partenaires en même temps).
 
     Si aucune agrégation n'est demandée, retourne df inchangé (identité).
     """
@@ -366,18 +427,27 @@ def regrouper(
             groupe[mask] = prefixe
         df["hs6"] = groupe.fillna(df["hs6"])  # sécurité : ligne non matchée garde son hs6
 
-    # ── Niveau partenaire ────────────────────────────────────────────────
-    if agreger_partenaires:
-        # Le côté "maison" (province/état fixe) reste tel quel, le côté
-        # "partenaire" devient un label agrégé générique.
+    # ── Niveau côté A (domestique) ──────────────────────────────────────
+    if agreger_a:
         est_de_te = df["flux"].isin(["DE", "TE"])
-        df.loc[est_de_te, "destination"] = "TOUS_PAYS"
+        df.loc[est_de_te, "origine"] = "TOTAL"
+        df.loc[~est_de_te, "destination"] = "TOTAL"
+
+    # ── Niveau côté B (partenaire) — filtré aux PAYS pour éviter le
+    # double comptage avec les états déjà présents dans l'agrégat pays
+    if agreger_b:
+        est_de_te = df["flux"].isin(["DE", "TE"])
+        df = df[
+            (est_de_te & (df["type_dest"] == "PAYS"))
+            | (~est_de_te & (df["type_ori"] == "PAYS"))
+        ].copy()
+        df.loc[est_de_te, "destination"] = "TOTAL"
         df.loc[est_de_te, "type_dest"] = "PAYS"
-        df.loc[~est_de_te, "origine"] = "TOUS_PAYS"
+        df.loc[~est_de_te, "origine"] = "TOTAL"
         df.loc[~est_de_te, "type_ori"] = "PAYS"
 
     # ── Sommation, seulement si une agrégation a effectivement été demandée
-    if agreger_produits or hs6_prefixes or agreger_partenaires:
+    if agreger_produits or hs6_prefixes or agreger_a or agreger_b:
         cles_groupe = ["annee", "source", "flux", "origine", "type_ori",
                         "destination", "type_dest", "hs6"]
         df = df.groupby(cles_groupe, as_index=False)["valeur"].sum()
