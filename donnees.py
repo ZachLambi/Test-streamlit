@@ -540,8 +540,15 @@ def ajouter_rang(df: pd.DataFrame) -> pd.DataFrame:
 METRIQUES_DISPONIBLES = {
     "variation_annuelle": ("Variation annuelle (%)", ajouter_variation_annuelle),
     "cagr": ("Taux de croissance composé (CAGR)", ajouter_cagr),
-    "part_marche": ("Part de marché (%)", ajouter_part_marche),
-    "rang": ("Rang parmi la sélection", ajouter_rang),
+    # "part_marche" et "rang" retirées temporairement (juillet 2026) — leur
+    # calcul actuel (ajouter_part_marche/ajouter_rang ci-dessus) compare
+    # contre le total de la SÉLECTION affichée, pas contre le vrai total de
+    # marché complet (tous les partenaires réels, peu importe le filtre) —
+    # trompeur si l'utilisateur ne sélectionne pas explicitement "Tous les
+    # partenaires". Les fonctions restent définies plus haut, prêtes à être
+    # branchées sur un futur outil de rang dédié qui interroge le total
+    # réel séparément du filtre d'affichage, plutôt que réexposées ici
+    # telles quelles.
 }
 
 

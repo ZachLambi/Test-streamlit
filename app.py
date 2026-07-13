@@ -32,7 +32,7 @@ from donnees import (
     referentiel_geo, REFERENTIEL_GEO_DISPONIBLE, source_symetrique,
     CATEGORIE_PAYS, CATEGORIE_ETATS, TOUS_PRODUITS,
 )
-from export import exporter_excel, exporter_csv, mettre_en_forme_large
+from export import exporter_excel, exporter_csv, mettre_en_forme_principal, mettre_en_forme_metrique
 
 st.set_page_config(page_title="BDD Universelle", layout="wide")
 
@@ -340,24 +340,47 @@ def _afficher_resultats(source: str, col_resultats, cle_session: str) -> None:
             st.info("Configure tes filtres à gauche, puis clique **Extraire**.")
             return
 
-        df_large = mettre_en_forme_large(df, referentiel_geo())
+        noms_geo = referentiel_geo()
+        avec_variation = "variation_pct" in df.columns
+        avec_part_marche = "part_marche_pct" in df.columns
+        avec_rang = "rang" in df.columns
 
-        st.subheader(f"Résultats — {len(df_large):,} lignes ({UNITE_PAR_SOURCE.get(source, '?')})")
-        st.dataframe(df_large, width='stretch', height=420)
+        df_principal = mettre_en_forme_principal(df, noms_geo, avec_variation=avec_variation)
+        df_part_marche = mettre_en_forme_metrique(df, "part_marche_pct", noms_geo) if avec_part_marche else pd.DataFrame()
+        df_rang = mettre_en_forme_metrique(df, "rang", noms_geo) if avec_rang else pd.DataFrame()
+
+        n_groupes = df_principal["Mesure"].eq("Valeur").sum() if "Mesure" in df_principal.columns else len(df_principal)
+        st.subheader(f"Résultats — {n_groupes:,} série(s) ({UNITE_PAR_SOURCE.get(source, '?')})")
+        st.dataframe(df_principal, width='stretch', height=420)
+
+        if avec_part_marche:
+            st.caption("Part de marché (%) — tableau séparé, une colonne par année")
+            st.dataframe(df_part_marche, width='stretch', height=200)
+        if avec_rang:
+            st.caption("Rang — tableau séparé, une colonne par année")
+            st.dataframe(df_rang, width='stretch', height=200)
+
+        tables_excel = {"Extraction": df_principal}
+        if avec_part_marche:
+            tables_excel["Part de marché"] = df_part_marche
+        if avec_rang:
+            tables_excel["Rang"] = df_rang
 
         col1, col2, _ = st.columns([1, 1, 2])
         with col1:
             st.download_button(
-                "📥 Excel", data=exporter_excel(df_large, UNITE_PAR_SOURCE.get(source, "?")),
+                "📥 Excel", data=exporter_excel(tables_excel, UNITE_PAR_SOURCE.get(source, "?")),
                 file_name=f"extraction_{source.lower()}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 width='stretch', key=f"dl_xlsx_{source}",
+                help="Part de marché et Rang, s'ils sont cochés, sont sur des feuilles séparées.",
             )
         with col2:
             st.download_button(
-                "📥 CSV", data=exporter_csv(df_large),
+                "📥 CSV", data=exporter_csv(df_principal),
                 file_name=f"extraction_{source.lower()}.csv",
                 mime="text/csv", width='stretch', key=f"dl_csv_{source}",
+                help="Tableau principal seulement — Part de marché/Rang disponibles en Excel.",
             )
 
 

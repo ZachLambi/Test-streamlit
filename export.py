@@ -1,9 +1,19 @@
 """
-export.py — Génération de fichiers d'export prêts à l'emploi
+export.py — Mise en forme et génération de fichiers d'export
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Objectif : que l'export SOIT la version finale (en-têtes clairs, colonnes
-ajustées, gel des volets, tri déjà fait) — pas un point de départ à
-remanier dans Excel avant de pouvoir l'utiliser.
+ajustées, gel des volets) — pas un point de départ à remanier dans Excel
+avant de pouvoir l'utiliser.
+
+Deux formes de tableau, réutilisées à l'identique pour l'écran ET l'export
+(impossible qu'ils divergent) :
+  - mettre_en_forme_principal() : tableau principal, une colonne par année,
+    Valeur et Variation annuelle (%) empilées en DEUX lignes par groupe
+    (pas deux colonnes) — la ligne Variation suit immédiatement sa ligne
+    Valeur. CAGR en colonnes de fin, rempli seulement sur la ligne Valeur.
+  - mettre_en_forme_metrique() : tableau séparé à une seule métrique par
+    année (Part de marché, Rang) — une ligne par groupe, une colonne par
+    année, pas de logique d'empilement (n'a pas de sens pour ces métriques).
 """
 
 from io import BytesIO
@@ -19,81 +29,102 @@ NOMS_COLONNES_AFFICHAGE = {
     "part_marche_pct": "Part de marché (%)", "rang": "Rang",
 }
 
-# Libellés des métriques qui varient PAR ANNÉE (pivotées, une colonne par
-# année) — à distinguer des métriques PAR SÉRIE (CAGR, n_annees_reel) qui
-# restent en une seule colonne puisqu'elles ont déjà la même valeur peu
-# importe l'année dans le résultat d'origine.
-_LIBELLES_METRIQUES_ANNEE = {
-    "valeur": "Valeur", "variation_pct": "Variation (%)",
-    "part_marche_pct": "Part marché (%)", "rang": "Rang",
-}
-_ORDRE_METRIQUES_ANNEE = ["valeur", "variation_pct", "part_marche_pct", "rang"]
-
-_COLONNES_A_MASQUER = {"type_ori", "type_dest", "source"}
 _CLES_IDENTITE = ["flux", "origine", "destination", "hs6"]
 
 
-def mettre_en_forme_large(df: pd.DataFrame, noms_geo: dict[str, str]) -> pd.DataFrame:
-    """
-    Transforme le résultat long (une ligne par année) en tableau large
-    (une colonne par année) prêt à être affiché ou exporté — appelée une
-    seule fois, réutilisée à l'identique pour l'écran ET l'export, pour
-    qu'ils ne puissent jamais diverger.
+def _convertir_noms(df: pd.DataFrame, noms_geo: dict[str, str]) -> pd.DataFrame:
+    df = df.copy()
+    df["origine"] = df["origine"].map(lambda c: noms_geo.get(c, c))
+    df["destination"] = df["destination"].map(lambda c: noms_geo.get(c, c))
+    return df
 
-      - codes origine/destination -> noms (référentiel géo, repli sur le
-        code si le référentiel n'a pas d'entrée pour ce code)
-      - colonnes type_ori / type_dest / source retirées (redondantes une
-        fois qu'on est dans un seul onglet d'une seule source)
-      - une colonne PAR ANNÉE pour la valeur, et — si les métriques
-        correspondantes ont été cochées — pour variation annuelle, part de
-        marché et rang, chacune accolée juste à côté de la valeur de son
-        année (pas dans un bloc séparé) pour rester facile à lire
-      - CAGR et son nombre d'années réel restent en une seule colonne à la
-        toute fin (valeur par SÉRIE, pas par année)
+
+def mettre_en_forme_principal(
+    df: pd.DataFrame, noms_geo: dict[str, str], avec_variation: bool
+) -> pd.DataFrame:
+    """
+    Tableau principal : une colonne par année, Valeur et Variation annuelle
+    (%) empilées en DEUX LIGNES par groupe (flux/origine/destination/hs6)
+    plutôt qu'en colonnes séparées — la colonne 'Mesure' indique laquelle
+    des deux. La ligne Variation suit toujours immédiatement sa ligne
+    Valeur (ordre de construction, pas un tri après coup).
+
+    CAGR (et son nombre d'années réel) en colonnes à la toute fin, remplies
+    UNIQUEMENT sur la ligne Valeur (vides sur la ligne Variation) — c'est
+    une métrique par SÉRIE, pas par année, ça n'a pas de sens de la répéter
+    ou de l'associer à la ligne Variation.
     """
     if df.empty:
         return df
 
-    df = df.copy()
-    df["origine"] = df["origine"].map(lambda c: noms_geo.get(c, c))
-    df["destination"] = df["destination"].map(lambda c: noms_geo.get(c, c))
-
+    df = _convertir_noms(df, noms_geo)
     cles = [c for c in _CLES_IDENTITE if c in df.columns]
-    colonnes_annee = [c for c in _ORDRE_METRIQUES_ANNEE if c in df.columns]
+    annees = sorted(df["annee"].dropna().unique())
+
     colonne_cagr = next((c for c in df.columns if c.startswith("cagr_") and c.endswith("ans_pct")), None)
     colonnes_serie = ([colonne_cagr] if colonne_cagr else []) + (
         ["n_annees_reel"] if "n_annees_reel" in df.columns else []
     )
+    a_variation = avec_variation and "variation_pct" in df.columns
 
+    lignes = []
+    for cles_valeurs, sous in df.groupby(cles, dropna=False, sort=False):
+        if not isinstance(cles_valeurs, tuple):
+            cles_valeurs = (cles_valeurs,)
+        sous = sous.set_index("annee")
+        base_dict = dict(zip(cles, cles_valeurs))
+
+        ligne_valeur = {**base_dict, "Mesure": "Valeur"}
+        for annee in annees:
+            ligne_valeur[str(annee)] = sous["valeur"].get(annee)
+        for col_serie in colonnes_serie:
+            if col_serie in sous.columns:
+                valeurs = sous[col_serie].dropna()
+                ligne_valeur[col_serie] = valeurs.iloc[0] if not valeurs.empty else None
+            else:
+                ligne_valeur[col_serie] = None
+        lignes.append(ligne_valeur)
+
+        if a_variation:
+            ligne_variation = {**base_dict, "Mesure": "Variation annuelle (%)"}
+            for annee in annees:
+                ligne_variation[str(annee)] = sous["variation_pct"].get(annee)
+            for col_serie in colonnes_serie:
+                ligne_variation[col_serie] = None  # vide sur la ligne Variation, par design
+            lignes.append(ligne_variation)
+
+    resultat = pd.DataFrame(lignes)
+    return resultat.rename(columns=NOMS_COLONNES_AFFICHAGE)
+
+
+def mettre_en_forme_metrique(df: pd.DataFrame, colonne: str, noms_geo: dict[str, str]) -> pd.DataFrame:
+    """
+    Tableau séparé pour UNE métrique par année qui n'a pas de logique
+    Valeur/Variation à empiler (Part de marché, Rang) — une ligne par
+    groupe, une colonne par année contenant directement cette métrique.
+    """
+    if df.empty or colonne not in df.columns:
+        return pd.DataFrame()
+
+    df = _convertir_noms(df, noms_geo)
+    cles = [c for c in _CLES_IDENTITE if c in df.columns]
     annees = sorted(df["annee"].dropna().unique())
 
     base = df[cles].drop_duplicates(subset=cles).reset_index(drop=True)
-
     for annee in annees:
         sous_annee = df[df["annee"] == annee]
-        for col in colonnes_annee:
-            libelle_metrique = _LIBELLES_METRIQUES_ANNEE[col]
-            nom_colonne = str(annee) if (len(colonnes_annee) == 1 and col == "valeur") \
-                else f"{annee} · {libelle_metrique}"
-            serie = sous_annee.set_index(cles)[col].rename(nom_colonne)
-            base = base.merge(serie, on=cles, how="left")
+        serie = sous_annee.set_index(cles)[colonne].rename(str(annee))
+        base = base.merge(serie, on=cles, how="left")
 
-    # Métriques PAR SÉRIE (CAGR, n_annees_reel) ajoutées en tout dernier —
-    # une seule valeur par groupe, pas par année, donc pas pivotées.
-    if colonnes_serie:
-        serie_valeurs = df[cles + colonnes_serie].drop_duplicates(subset=cles)
-        base = base.merge(serie_valeurs, on=cles, how="left")
-
-    base = base.rename(columns=NOMS_COLONNES_AFFICHAGE)
-    return base
+    return base.rename(columns=NOMS_COLONNES_AFFICHAGE)
 
 
-def exporter_excel(df_large: pd.DataFrame, note_unite: str) -> bytes:
-    """Génère un .xlsx formaté à partir d'un tableau DÉJÀ mis en forme par
-    mettre_en_forme_large() (large, colonnes renommées, codes déjà
-    convertis en noms) — en-têtes en gras avec fond, colonnes ajustées à
-    leur contenu, volets gelés sous l'en-tête. Retourne les bytes du
-    fichier (prêt pour un bouton de téléchargement).
+def exporter_excel(tables: dict[str, pd.DataFrame], note_unite: str) -> bytes:
+    """Génère un .xlsx avec UNE FEUILLE PAR TABLE fournie (ex: "Extraction",
+    "Part de marché", "Rang") — chaque table déjà mise en forme par
+    mettre_en_forme_principal()/mettre_en_forme_metrique(). Tables vides
+    ignorées. En-têtes en gras avec fond, colonnes ajustées, volets gelés
+    sur chaque feuille. Retourne les bytes du fichier.
 
     Import openpyxl différé (dans la fonction, pas en haut du module) —
     évite un conflit bas niveau observé entre openpyxl et DuckDB quand les
@@ -103,37 +134,35 @@ def exporter_excel(df_large: pd.DataFrame, note_unite: str) -> bytes:
 
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df_large.to_excel(writer, sheet_name="Extraction", index=False, startrow=1)
-        wb = writer.book
-        ws = writer.sheets["Extraction"]
+        for nom_feuille, df_table in tables.items():
+            if df_table is None or df_table.empty:
+                continue
+            nom_feuille_court = nom_feuille[:31]  # limite Excel
+            df_table.to_excel(writer, sheet_name=nom_feuille_court, index=False, startrow=1)
+            ws = writer.sheets[nom_feuille_court]
 
-        # Ligne de note sur les unités, au-dessus du tableau
-        ws.cell(row=1, column=1, value=f"Unités : {note_unite}").font = Font(italic=True, size=9)
+            ws.cell(row=1, column=1, value=f"Unités : {note_unite}").font = Font(italic=True, size=9)
 
-        # En-têtes : gras, fond gris clair, alignées au centre
-        fond_entete = PatternFill(start_color="E8EAED", end_color="E8EAED", fill_type="solid")
-        for col_idx, nom_col in enumerate(df_large.columns, start=1):
-            cellule = ws.cell(row=2, column=col_idx)
-            cellule.font = Font(bold=True)
-            cellule.fill = fond_entete
-            cellule.alignment = Alignment(horizontal="center")
+            fond_entete = PatternFill(start_color="E8EAED", end_color="E8EAED", fill_type="solid")
+            for col_idx, nom_col in enumerate(df_table.columns, start=1):
+                cellule = ws.cell(row=2, column=col_idx)
+                cellule.font = Font(bold=True)
+                cellule.fill = fond_entete
+                cellule.alignment = Alignment(horizontal="center")
 
-        # Largeur de colonne ajustée au contenu (plafonnée à 40 pour éviter
-        # qu'une valeur aberrante n'étire toute la colonne)
-        for col_idx, nom_col in enumerate(df_large.columns, start=1):
-            lettre = get_column_letter(col_idx)
-            largeur_contenu = df_large[nom_col].astype(str).str.len().max()
-            largeur = max(len(str(nom_col)), int(largeur_contenu) if pd.notna(largeur_contenu) else 10) + 2
-            ws.column_dimensions[lettre].width = min(largeur, 40)
+            for col_idx, nom_col in enumerate(df_table.columns, start=1):
+                lettre = get_column_letter(col_idx)
+                largeur_contenu = df_table[nom_col].astype(str).str.len().max()
+                largeur = max(len(str(nom_col)), int(largeur_contenu) if pd.notna(largeur_contenu) else 10) + 2
+                ws.column_dimensions[lettre].width = min(largeur, 40)
 
-        # Gel des volets sous l'en-tête (ligne 3 = première ligne de données)
-        ws.freeze_panes = "A3"
+            ws.freeze_panes = "A3"
 
     return buffer.getvalue()
 
 
-def exporter_csv(df_large: pd.DataFrame) -> bytes:
-    """CSV simple pour retraitement ailleurs, à partir d'un tableau DÉJÀ
-    mis en forme par mettre_en_forme_large() (pas de mise en forme
-    supplémentaire ici — c'est le point : un CSV formaté n'a pas de sens)."""
-    return df_large.to_csv(index=False).encode("utf-8-sig")  # BOM pour Excel FR
+def exporter_csv(df_principal: pd.DataFrame) -> bytes:
+    """CSV du tableau PRINCIPAL uniquement (un CSV = une seule table par
+    nature — les tableaux Part de marché/Rang, s'il y en a, ne sont
+    disponibles qu'en Excel, en feuilles séparées)."""
+    return df_principal.to_csv(index=False).encode("utf-8-sig")  # BOM pour Excel FR
