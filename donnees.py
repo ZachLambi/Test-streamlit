@@ -139,6 +139,25 @@ def lister_flux_disponibles(source: str, chemins: dict[str, str] | None = None) 
     return _lister_flux_impl(chemin, _mtime(chemin))
 
 
+@st.cache_data(show_spinner=False)
+def _lister_codes_hs_impl(chemin: str, _mtime_cle: float) -> list[str]:
+    con = _con()
+    df = con.execute("SELECT DISTINCT hs6 FROM read_parquet(?) ORDER BY hs6", [chemin]).fetchdf()
+    return df["hs6"].tolist()
+
+
+def lister_codes_hs(source: str, chemins: dict[str, str] | None = None) -> list[str]:
+    """Codes HS6 réellement présents dans le parquet de cette source — pas
+    une nomenclature complète codée en dur (on n'a pas de référentiel de
+    noms de produits, contrairement au référentiel géo). Mis en cache par
+    (chemin, mtime), même logique que les autres fonctions lister_*."""
+    chemins = chemins or SOURCES_PARQUET
+    chemin = chemins.get(source)
+    if not chemin or not Path(chemin).exists():
+        return []
+    return _lister_codes_hs_impl(chemin, _mtime(chemin))
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # RÉFÉRENTIEL GÉOGRAPHIQUE — correspondance code -> nom lisible, + statut actif
 # ═══════════════════════════════════════════════════════════════════════════

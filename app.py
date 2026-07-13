@@ -28,9 +28,9 @@ import pandas as pd
 from donnees import (
     extraire, regrouper, appliquer_metriques, METRIQUES_DISPONIBLES, UNITE_PAR_SOURCE,
     SOURCES_PARQUET, NIVEAUX_SOURCES, MODE_TEST,
-    lister_flux_disponibles, lister_entites_cote, lister_annees_disponibles,
+    lister_flux_disponibles, lister_entites_cote, lister_annees_disponibles, lister_codes_hs,
     referentiel_geo, REFERENTIEL_GEO_DISPONIBLE, source_symetrique,
-    CATEGORIE_PAYS, CATEGORIE_ETATS, TOUS_PRODUITS,
+    CATEGORIE_PAYS, CATEGORIE_ETATS,
 )
 from export import exporter_excel, exporter_csv, mettre_en_forme_principal, mettre_en_forme_metrique, formater_pour_ecran
 
@@ -62,6 +62,62 @@ def _libelle_partenaire(code: str, type_partenaire: str, noms: dict[str, str]) -
     """Nom seul (repli sur le code si le référentiel géo n'a pas d'entrée
     pour ce code) — pas de suffixe code/type dans l'affichage."""
     return noms.get(code, code)
+
+
+TOTAL_PRODUITS = "Total (tous les produits)"
+
+
+def _ajouter_codes_hs_colles(cle_multiselect: str, cle_texte: str) -> None:
+    """Callback du champ 'coller des codes' — fusionne les codes tapés
+    (séparés par virgule) dans la sélection déjà présente du multiselect,
+    puis vide le champ. Fonctionne pour des codes/préfixes qui ne sont PAS
+    forcément des HS6 exacts déjà connus (ex: taper '87' comme préfixe
+    HS2) — voir _selecteur_codes_hs() pour comment ça reste sélectionnable
+    malgré tout dans le multiselect."""
+    texte = st.session_state.get(cle_texte, "")
+    nouveaux = [c.strip() for c in texte.split(",") if c.strip()]
+    if not nouveaux:
+        return
+    actuel = st.session_state.get(cle_multiselect, [])
+    st.session_state[cle_multiselect] = list(dict.fromkeys(actuel + nouveaux))  # union, ordre préservé, pas de doublon
+    st.session_state[cle_texte] = ""
+
+
+def _selecteur_codes_hs(source: str) -> tuple[list[str] | None, bool]:
+    """Sélecteur de codes HS, même esprit que le sélecteur de partenaires :
+    'Total (tous les produits)' toujours en première position, puis les
+    codes HS6 réellement présents dans les données de cette source
+    (recherchables en tapant dans le menu). Un champ séparé permet aussi
+    de coller des codes/préfixes séparés par virgule (Entrée pour les
+    ajouter) — pratique pour un préfixe HS2/HS4 (ex: '87') qui n'est pas
+    lui-même un code HS6 exact et n'apparaîtrait donc pas dans la liste de
+    base; il est ajouté dynamiquement aux options pour rester sélectionnable.
+
+    Retourne (codes_hs: list[str]|None, agreger_produits: bool)."""
+    codes_reels = lister_codes_hs(source)
+    cle_multiselect = f"hs_multiselect_{source}"
+    cle_texte = f"hs_texte_{source}"
+
+    deja_selectionnes = st.session_state.get(cle_multiselect, [])
+    options = [TOTAL_PRODUITS] + codes_reels + [
+        c for c in deja_selectionnes if c not in codes_reels and c != TOTAL_PRODUITS
+    ]
+
+    selection = st.multiselect(
+        "Codes HS", options=options, key=cle_multiselect,
+        help=f"'{TOTAL_PRODUITS}' somme tout en une ligne. Vide = détail de "
+             "tous les produits. Un préfixe (ex: 8703) somme automatiquement "
+             "tous les HS6 sous ce préfixe en une seule ligne.",
+    )
+    st.text_input(
+        "Ou coller des codes séparés par virgule (Entrée pour ajouter)",
+        key=cle_texte, on_change=_ajouter_codes_hs_colles, args=(cle_multiselect, cle_texte),
+    )
+
+    if TOTAL_PRODUITS in selection:
+        return None, True
+
+    return (selection or None), False
 
 
 def _selecteur_cote_a(source: str, entites_a: list[tuple[str, str]], noms_geo: dict[str, str]):
@@ -169,18 +225,7 @@ def afficher_onglet_directionnel(source: str) -> None:
         partenaires_b, agreger_b = _selecteur_cote_b(source, entites_b, noms_geo)
 
         st.divider()
-        agreger_produits = st.checkbox(TOUS_PRODUITS, key=f"tous_produits_{source}")
-        codes_hs_saisis = st.text_input(
-            "Codes HS (préfixes séparés par virgule, ex: 8703,27)",
-            key=f"hs_{source}",
-            disabled=agreger_produits,
-            help="Saisir un préfixe (ex: 8703) somme automatiquement tous les "
-                 "HS6 sous ce préfixe en une seule ligne — pas un simple filtre. "
-                 "Un code HS6 complet (6 chiffres) donne le détail exact de ce produit.",
-        )
-        codes_hs = None if agreger_produits else (
-            [c.strip() for c in codes_hs_saisis.split(",") if c.strip()] or None
-        )
+        codes_hs, agreger_produits = _selecteur_codes_hs(source)
 
         st.divider()
         st.subheader("Métriques")
@@ -276,17 +321,7 @@ def afficher_onglet_symetrique(source: str) -> None:
         partenaires_2 = [libelle_vers_code[lbl] for lbl in choix_2] or None
 
         st.divider()
-        agreger_produits = st.checkbox(TOUS_PRODUITS, key=f"tous_produits_{source}")
-        codes_hs_saisis = st.text_input(
-            "Codes HS (préfixes séparés par virgule, ex: 8703,27)",
-            key=f"hs_{source}",
-            disabled=agreger_produits,
-            help="Saisir un préfixe (ex: 8703) somme automatiquement tous les "
-                 "HS6 sous ce préfixe en une seule ligne — pas un simple filtre.",
-        )
-        codes_hs = None if agreger_produits else (
-            [c.strip() for c in codes_hs_saisis.split(",") if c.strip()] or None
-        )
+        codes_hs, agreger_produits = _selecteur_codes_hs(source)
 
         st.divider()
         st.subheader("Métriques")
