@@ -119,25 +119,23 @@ def _selecteur_codes_hs(source: str) -> tuple[list[str] | None, bool]:
         ]
         choix = st.multiselect(
             _LIBELLES_NIVEAU_HS[niveau], options=options, key=cle,
-            disabled=agreger_produits,
         )
         codes_choisis += choix
 
     st.text_input(
         "Ou coller des codes séparés par virgule (Entrée pour ajouter — "
         "routés automatiquement vers SH2/SH4/SH6 selon leur longueur)",
-        key=cle_texte, disabled=agreger_produits,
+        key=cle_texte,
         on_change=_ajouter_codes_hs_colles, args=(cles_par_niveau, cle_texte),
     )
     st.caption(
         "Vide = détail complet. Sélectionner un SH2/SH4 somme automatiquement "
-        "tous les SH6 sous ce préfixe en une seule ligne."
+        "tous les SH6 sous ce préfixe en une seule ligne. Cocher Total en plus "
+        "de codes précis ajoute une ligne de somme complète SANS retirer le "
+        "détail des codes choisis."
     )
 
-    if agreger_produits:
-        return None, True
-
-    return (codes_choisis or None), False
+    return (codes_choisis or None), agreger_produits
 
 
 def _selecteur_cote_a(source: str, entites_a: list[tuple[str, str]], noms_geo: dict[str, str]):
@@ -206,6 +204,60 @@ def _selecteur_cote_b(source: str, entites_b: list[tuple[str, str]], noms_geo: d
     return (codes_choisis or None), False
 
 
+def _extraire_produits_combine(
+    source: str, annees, flux,
+    partenaires_a=None, agreger_a=False,
+    partenaires_b=None, agreger_b=False,
+    codes_hs=None, agreger_produits=False,
+) -> pd.DataFrame:
+    """'Total (tous les produits)' n'est PAS exclusif — si coché EN MÊME
+    TEMPS que des codes SH précis sont sélectionnés, combine les deux : une
+    ligne TOUS (somme complète) ET les lignes pour les codes précis
+    choisis, plutôt que l'un ou l'autre. Chaque cas (Total, codes précis,
+    aucun des deux = détail complet) fait sa propre extraction+regroupement
+    via les fonctions déjà testées, puis les résultats sont concaténés."""
+    morceaux = []
+
+    if agreger_produits:
+        df_total = extraire(
+            sources=[source], annees=annees, flux=flux,
+            partenaires_a=partenaires_a, agreger_a=agreger_a,
+            partenaires_b=partenaires_b, agreger_b=agreger_b,
+        )
+        morceaux.append(regrouper(df_total, agreger_produits=True, agreger_a=agreger_a, agreger_b=agreger_b))
+
+    if codes_hs:
+        df_precis = extraire(
+            sources=[source], annees=annees, flux=flux,
+            partenaires_a=partenaires_a, agreger_a=agreger_a,
+            partenaires_b=partenaires_b, agreger_b=agreger_b,
+            hs6_prefixes=codes_hs,
+        )
+        morceaux.append(regrouper(df_precis, hs6_prefixes=codes_hs, agreger_a=agreger_a, agreger_b=agreger_b))
+
+    if not agreger_produits and not codes_hs:
+        df_tout = extraire(
+            sources=[source], annees=annees, flux=flux,
+            partenaires_a=partenaires_a, agreger_a=agreger_a,
+            partenaires_b=partenaires_b, agreger_b=agreger_b,
+        )
+        morceaux.append(regrouper(df_tout, agreger_a=agreger_a, agreger_b=agreger_b))
+
+    if not morceaux:
+        return pd.DataFrame()
+    return pd.concat(morceaux, ignore_index=True) if len(morceaux) > 1 else morceaux[0]
+
+
+def _section(titre: str):
+    """Bloc visuel délimité — bordure arrondie native de Streamlit
+    (st.container(border=True)), avec un titre à l'intérieur. Utilisé pour
+    regrouper visuellement les filtres par thème (Flux et période,
+    Géographie, Produits, Métriques) plutôt qu'une longue liste continue."""
+    conteneur = st.container(border=True)
+    conteneur.markdown(f"**{titre}**")
+    return conteneur
+
+
 def afficher_onglet_directionnel(source: str) -> None:
     """ISQ / CIMT / Census — côté A (domestique) + côté B (partenaire)."""
 
@@ -222,43 +274,42 @@ def afficher_onglet_directionnel(source: str) -> None:
     col_filtres, col_resultats = st.columns([1, 2.2])
 
     with col_filtres:
-        st.subheader("Filtres")
+        with _section("Flux et période"):
+            if annee_min_dispo == annee_max_dispo:
+                st.caption(f"Année disponible : {annee_min_dispo}")
+                annees_selectionnees = [annee_min_dispo]
+            else:
+                annee_min, annee_max = st.slider(
+                    "Années", min_value=annee_min_dispo, max_value=annee_max_dispo,
+                    value=(annee_min_dispo, annee_max_dispo),
+                    key=f"annees_{source}",
+                )
+                annees_selectionnees = list(range(annee_min, annee_max + 1))
 
-        if annee_min_dispo == annee_max_dispo:
-            st.caption(f"Année disponible : {annee_min_dispo}")
-            annees_selectionnees = [annee_min_dispo]
-        else:
-            annee_min, annee_max = st.slider(
-                "Années", min_value=annee_min_dispo, max_value=annee_max_dispo,
-                value=(annee_min_dispo, annee_max_dispo),
-                key=f"annees_{source}",
+            flux_cochees = st.multiselect(
+                "Flux", options=flux_disponibles, default=flux_disponibles,
+                key=f"flux_{source}",
             )
-            annees_selectionnees = list(range(annee_min, annee_max + 1))
 
-        flux_cochees = st.multiselect(
-            "Flux", options=flux_disponibles, default=flux_disponibles,
-            key=f"flux_{source}",
-        )
+        with _section("Géographie"):
+            partenaires_a, agreger_a = _selecteur_cote_a(source, entites_a, noms_geo)
+            st.divider()
+            partenaires_b, agreger_b = _selecteur_cote_b(source, entites_b, noms_geo)
 
-        partenaires_a, agreger_a = _selecteur_cote_a(source, entites_a, noms_geo)
-        st.divider()
-        partenaires_b, agreger_b = _selecteur_cote_b(source, entites_b, noms_geo)
+        with _section("Produits"):
+            codes_hs, agreger_produits = _selecteur_codes_hs(source)
 
-        st.divider()
-        codes_hs, agreger_produits = _selecteur_codes_hs(source)
-
-        st.divider()
-        st.subheader("Métriques")
-        metriques_cochees = [
-            cle for cle, (libelle, _) in METRIQUES_DISPONIBLES.items()
-            if st.checkbox(libelle, value=(cle == "variation_annuelle"), key=f"metrique_{cle}_{source}")
-        ]
-        cagr_n_annees = 5
-        if "cagr" in metriques_cochees:
-            cagr_n_annees = st.number_input(
-                "CAGR sur combien d'années", min_value=2, max_value=15, value=5,
-                key=f"cagr_n_{source}",
-            )
+        with _section("Métriques"):
+            metriques_cochees = [
+                cle for cle, (libelle, _) in METRIQUES_DISPONIBLES.items()
+                if st.checkbox(libelle, value=(cle == "variation_annuelle"), key=f"metrique_{cle}_{source}")
+            ]
+            cagr_n_annees = 5
+            if "cagr" in metriques_cochees:
+                cagr_n_annees = st.number_input(
+                    "CAGR sur combien d'années", min_value=2, max_value=15, value=5,
+                    key=f"cagr_n_{source}",
+                )
 
         lancer = st.button("Extraire", type="primary", width='stretch', key=f"extraire_{source}")
 
@@ -269,19 +320,11 @@ def afficher_onglet_directionnel(source: str) -> None:
             st.warning("Coche au moins un flux.")
         else:
             with st.spinner("Extraction en cours..."):
-                df = extraire(
-                    sources=[source],
-                    annees=annees_selectionnees,
-                    flux=flux_cochees,
+                df = _extraire_produits_combine(
+                    source, annees_selectionnees, flux_cochees,
                     partenaires_a=partenaires_a, agreger_a=agreger_a,
                     partenaires_b=partenaires_b, agreger_b=agreger_b,
-                    hs6_prefixes=codes_hs,
-                )
-                df = regrouper(
-                    df,
-                    hs6_prefixes=codes_hs,
-                    agreger_produits=agreger_produits,
-                    agreger_a=agreger_a, agreger_b=agreger_b,
+                    codes_hs=codes_hs, agreger_produits=agreger_produits,
                 )
                 if metriques_cochees:
                     df = appliquer_metriques(df, metriques_cochees, cagr_n_annees=cagr_n_annees)
@@ -305,56 +348,55 @@ def afficher_onglet_symetrique(source: str) -> None:
     col_filtres, col_resultats = st.columns([1, 2.2])
 
     with col_filtres:
-        st.subheader("Filtres")
+        with _section("Flux et période"):
+            if annee_min_dispo == annee_max_dispo:
+                st.caption(f"Année disponible : {annee_min_dispo}")
+                annees_selectionnees = [annee_min_dispo]
+            else:
+                annee_min, annee_max = st.slider(
+                    "Années", min_value=annee_min_dispo, max_value=annee_max_dispo,
+                    value=(annee_min_dispo, annee_max_dispo),
+                    key=f"annees_{source}",
+                )
+                annees_selectionnees = list(range(annee_min, annee_max + 1))
 
-        if annee_min_dispo == annee_max_dispo:
-            st.caption(f"Année disponible : {annee_min_dispo}")
-            annees_selectionnees = [annee_min_dispo]
-        else:
-            annee_min, annee_max = st.slider(
-                "Années", min_value=annee_min_dispo, max_value=annee_max_dispo,
-                value=(annee_min_dispo, annee_max_dispo),
-                key=f"annees_{source}",
+            flux_cochees = st.multiselect(
+                "Flux", options=flux_disponibles, default=flux_disponibles,
+                key=f"flux_{source}",
             )
-            annees_selectionnees = list(range(annee_min, annee_max + 1))
 
-        flux_cochees = st.multiselect(
-            "Flux", options=flux_disponibles, default=flux_disponibles,
-            key=f"flux_{source}",
-        )
+        with _section("Géographie"):
+            options = [_libelle_partenaire(c, t, noms_geo) for c, t in entites]
+            libelle_vers_code = {_libelle_partenaire(c, t, noms_geo): c for c, t in entites}
 
-        options = [_libelle_partenaire(c, t, noms_geo) for c, t in entites]
-        libelle_vers_code = {_libelle_partenaire(c, t, noms_geo): c for c, t in entites}
-
-        choix_1 = st.multiselect(
-            "Pays 1", options=options, key=f"pays1_{source}",
-            help="Vide = n'importe quel pays de ce côté.",
-        )
-        choix_2 = st.multiselect(
-            "Pays 2", options=options, key=f"pays2_{source}",
-            help="Vide = n'importe quel pays de ce côté. Si les deux listes "
-                 "sont remplies, seule la paire exacte est retenue (dans les "
-                 "deux sens). Si une seule l'est, tout échange impliquant ce "
-                 "pays est retenu.",
-        )
-        partenaires_1 = [libelle_vers_code[lbl] for lbl in choix_1] or None
-        partenaires_2 = [libelle_vers_code[lbl] for lbl in choix_2] or None
-
-        st.divider()
-        codes_hs, agreger_produits = _selecteur_codes_hs(source)
-
-        st.divider()
-        st.subheader("Métriques")
-        metriques_cochees = [
-            cle for cle, (libelle, _) in METRIQUES_DISPONIBLES.items()
-            if st.checkbox(libelle, value=(cle == "variation_annuelle"), key=f"metrique_{cle}_{source}")
-        ]
-        cagr_n_annees = 5
-        if "cagr" in metriques_cochees:
-            cagr_n_annees = st.number_input(
-                "CAGR sur combien d'années", min_value=2, max_value=15, value=5,
-                key=f"cagr_n_{source}",
+            choix_1 = st.multiselect(
+                "Pays 1", options=options, key=f"pays1_{source}",
+                help="Vide = n'importe quel pays de ce côté.",
             )
+            choix_2 = st.multiselect(
+                "Pays 2", options=options, key=f"pays2_{source}",
+                help="Vide = n'importe quel pays de ce côté. Si les deux listes "
+                     "sont remplies, seule la paire exacte est retenue (dans les "
+                     "deux sens). Si une seule l'est, tout échange impliquant ce "
+                     "pays est retenu.",
+            )
+            partenaires_1 = [libelle_vers_code[lbl] for lbl in choix_1] or None
+            partenaires_2 = [libelle_vers_code[lbl] for lbl in choix_2] or None
+
+        with _section("Produits"):
+            codes_hs, agreger_produits = _selecteur_codes_hs(source)
+
+        with _section("Métriques"):
+            metriques_cochees = [
+                cle for cle, (libelle, _) in METRIQUES_DISPONIBLES.items()
+                if st.checkbox(libelle, value=(cle == "variation_annuelle"), key=f"metrique_{cle}_{source}")
+            ]
+            cagr_n_annees = 5
+            if "cagr" in metriques_cochees:
+                cagr_n_annees = st.number_input(
+                    "CAGR sur combien d'années", min_value=2, max_value=15, value=5,
+                    key=f"cagr_n_{source}",
+                )
 
         lancer = st.button("Extraire", type="primary", width='stretch', key=f"extraire_{source}")
 
@@ -365,15 +407,11 @@ def afficher_onglet_symetrique(source: str) -> None:
             st.warning("Coche au moins un flux.")
         else:
             with st.spinner("Extraction en cours..."):
-                df = extraire(
-                    sources=[source],
-                    annees=annees_selectionnees,
-                    flux=flux_cochees,
-                    partenaires_a=partenaires_1,
-                    partenaires_b=partenaires_2,
-                    hs6_prefixes=codes_hs,
+                df = _extraire_produits_combine(
+                    source, annees_selectionnees, flux_cochees,
+                    partenaires_a=partenaires_1, partenaires_b=partenaires_2,
+                    codes_hs=codes_hs, agreger_produits=agreger_produits,
                 )
-                df = regrouper(df, hs6_prefixes=codes_hs, agreger_produits=agreger_produits)
                 if metriques_cochees:
                     df = appliquer_metriques(df, metriques_cochees, cagr_n_annees=cagr_n_annees)
             st.session_state[cle_session] = df
