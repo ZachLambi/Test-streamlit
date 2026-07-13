@@ -176,10 +176,10 @@ def _selecteur_cote_b(source: str, entites_b: list[tuple[str, str]], noms_geo: d
         "Tous les partenaires (somme, exclut le détail des états)",
         key=f"agreger_b_{source}",
         help="Somme tous les pays en une seule ligne — exclut les états, "
-             "déjà comptés dans l'agrégat pays (évite le double comptage).",
+             "déjà comptés dans l'agrégat pays (évite le double comptage). "
+             "Se combine avec une sélection précise ci-dessous plutôt que "
+             "de la remplacer : les deux apparaissent dans le résultat.",
     )
-    if agreger:
-        return None, True
 
     codes_choisis: list[str] = []
 
@@ -201,47 +201,60 @@ def _selecteur_cote_b(source: str, entites_b: list[tuple[str, str]], noms_geo: d
         )
         codes_choisis += [libelle_vers_code_etats[lbl] for lbl in choix_etats]
 
-    return (codes_choisis or None), False
+    return (codes_choisis or None), agreger
 
 
-def _extraire_produits_combine(
+def _modes_axe(agreger: bool, valeurs_precises: list[str] | None) -> list[tuple[str, list[str] | None]]:
+    """Détermine les 'modes' actifs pour UN axe (produits ou partenaires
+    côté B) : 'total' et/ou 'precis' — non exclusifs, comme demandé. Si
+    aucun des deux n'est actif, un seul mode 'detail' (aucun filtre =
+    détail complet), pour ne jamais retourner une liste vide."""
+    modes: list[tuple[str, list[str] | None]] = []
+    if agreger:
+        modes.append(("total", None))
+    if valeurs_precises:
+        modes.append(("precis", valeurs_precises))
+    if not modes:
+        modes.append(("detail", None))
+    return modes
+
+
+def _extraire_combine(
     source: str, annees, flux,
     partenaires_a=None, agreger_a=False,
     partenaires_b=None, agreger_b=False,
     codes_hs=None, agreger_produits=False,
 ) -> pd.DataFrame:
-    """'Total (tous les produits)' n'est PAS exclusif — si coché EN MÊME
-    TEMPS que des codes SH précis sont sélectionnés, combine les deux : une
-    ligne TOUS (somme complète) ET les lignes pour les codes précis
-    choisis, plutôt que l'un ou l'autre. Chaque cas (Total, codes précis,
-    aucun des deux = détail complet) fait sa propre extraction+regroupement
-    via les fonctions déjà testées, puis les résultats sont concaténés."""
+    """'Total' n'est PAS exclusif sur les deux axes qui l'offrent — codes
+    HS précis (produits) ET partenaires précis (côté B, Pays/États). Si
+    'Total' est coché EN MÊME TEMPS qu'une sélection précise sur ce même
+    axe, les deux apparaissent dans le résultat plutôt que l'un ou l'autre.
+
+    Implémenté comme le PRODUIT CARTÉSIEN des modes actifs de chaque axe
+    (voir _modes_axe) — une extraction+regroupement par combinaison, puis
+    concaténation. Le côté A (domestique) n'est PAS doublé ici : son
+    propre agreger_a/partenaires_a est simplement transmis tel quel à
+    chaque combinaison (pas demandé à être rendu non exclusif)."""
+    modes_hs = _modes_axe(agreger_produits, codes_hs)
+    modes_b = _modes_axe(agreger_b, partenaires_b)
+
     morceaux = []
-
-    if agreger_produits:
-        df_total = extraire(
-            sources=[source], annees=annees, flux=flux,
-            partenaires_a=partenaires_a, agreger_a=agreger_a,
-            partenaires_b=partenaires_b, agreger_b=agreger_b,
-        )
-        morceaux.append(regrouper(df_total, agreger_produits=True, agreger_a=agreger_a, agreger_b=agreger_b))
-
-    if codes_hs:
-        df_precis = extraire(
-            sources=[source], annees=annees, flux=flux,
-            partenaires_a=partenaires_a, agreger_a=agreger_a,
-            partenaires_b=partenaires_b, agreger_b=agreger_b,
-            hs6_prefixes=codes_hs,
-        )
-        morceaux.append(regrouper(df_precis, hs6_prefixes=codes_hs, agreger_a=agreger_a, agreger_b=agreger_b))
-
-    if not agreger_produits and not codes_hs:
-        df_tout = extraire(
-            sources=[source], annees=annees, flux=flux,
-            partenaires_a=partenaires_a, agreger_a=agreger_a,
-            partenaires_b=partenaires_b, agreger_b=agreger_b,
-        )
-        morceaux.append(regrouper(df_tout, agreger_a=agreger_a, agreger_b=agreger_b))
+    for type_hs, valeurs_hs in modes_hs:
+        for type_b, valeurs_b in modes_b:
+            df = extraire(
+                sources=[source], annees=annees, flux=flux,
+                partenaires_a=partenaires_a, agreger_a=agreger_a,
+                partenaires_b=(valeurs_b if type_b == "precis" else None),
+                hs6_prefixes=(valeurs_hs if type_hs == "precis" else None),
+            )
+            df = regrouper(
+                df,
+                hs6_prefixes=(valeurs_hs if type_hs == "precis" else None),
+                agreger_produits=(type_hs == "total"),
+                agreger_a=agreger_a,
+                agreger_b=(type_b == "total"),
+            )
+            morceaux.append(df)
 
     if not morceaux:
         return pd.DataFrame()
@@ -293,7 +306,8 @@ def afficher_onglet_directionnel(source: str) -> None:
 
         with _section("Géographie"):
             partenaires_a, agreger_a = _selecteur_cote_a(source, entites_a, noms_geo)
-            st.divider()
+            if len(entites_a) > 1:  # sélecteur "Domestique" réellement affiché ci-dessus
+                st.divider()
             partenaires_b, agreger_b = _selecteur_cote_b(source, entites_b, noms_geo)
 
         with _section("Produits"):
@@ -320,7 +334,7 @@ def afficher_onglet_directionnel(source: str) -> None:
             st.warning("Coche au moins un flux.")
         else:
             with st.spinner("Extraction en cours..."):
-                df = _extraire_produits_combine(
+                df = _extraire_combine(
                     source, annees_selectionnees, flux_cochees,
                     partenaires_a=partenaires_a, agreger_a=agreger_a,
                     partenaires_b=partenaires_b, agreger_b=agreger_b,
@@ -407,7 +421,7 @@ def afficher_onglet_symetrique(source: str) -> None:
             st.warning("Coche au moins un flux.")
         else:
             with st.spinner("Extraction en cours..."):
-                df = _extraire_produits_combine(
+                df = _extraire_combine(
                     source, annees_selectionnees, flux_cochees,
                     partenaires_a=partenaires_1, partenaires_b=partenaires_2,
                     codes_hs=codes_hs, agreger_produits=agreger_produits,
