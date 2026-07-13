@@ -39,6 +39,12 @@ def _convertir_noms(df: pd.DataFrame, noms_geo: dict[str, str]) -> pd.DataFrame:
     return df
 
 
+def _colonnes_annees(df: pd.DataFrame) -> list[str]:
+    """Colonnes dont l'en-tête est une année brute (ex: '2019') — pas
+    'Année', pas les autres colonnes."""
+    return [c for c in df.columns if c.isdigit() and len(c) == 4]
+
+
 def mettre_en_forme_principal(
     df: pd.DataFrame, noms_geo: dict[str, str], avec_variation: bool
 ) -> pd.DataFrame:
@@ -48,6 +54,15 @@ def mettre_en_forme_principal(
     plutôt qu'en colonnes séparées — la colonne 'Mesure' indique laquelle
     des deux. La ligne Variation suit toujours immédiatement sa ligne
     Valeur (ordre de construction, pas un tri après coup).
+
+    Les montants de la ligne Valeur restent de VRAIS NOMBRES (pas du
+    texte) — utilisables dans une formule Excel, triables normalement.
+    L'export Excel leur applique un format d'affichage '#,##0' qui montre
+    un séparateur de milliers selon les paramètres régionaux de l'Excel
+    qui ouvre le fichier (espace pour un Excel en français, virgule pour
+    un Excel en anglais — pas garanti, mais reste un vrai nombre). À
+    l'écran (Streamlit), aucun séparateur n'est possible du tout — limite
+    documentée de st.dataframe, pas un choix de ce module.
 
     CAGR (et son nombre d'années réel) en colonnes à la toute fin, remplies
     UNIQUEMENT sur la ligne Valeur (vides sur la ligne Variation) — c'est
@@ -155,6 +170,20 @@ def exporter_excel(tables: dict[str, pd.DataFrame], note_unite: str) -> bytes:
                 largeur_contenu = df_table[nom_col].astype(str).str.len().max()
                 largeur = max(len(str(nom_col)), int(largeur_contenu) if pd.notna(largeur_contenu) else 10) + 2
                 ws.column_dimensions[lettre].width = min(largeur, 40)
+
+            # Format numérique '#,##0' sur les colonnes années, SEULEMENT
+            # pour les lignes "Valeur" (pas "Variation annuelle (%)", qui
+            # partage les mêmes colonnes mais reste un pourcentage). Le
+            # séparateur affiché dépend des paramètres régionaux de l'Excel
+            # qui ouvre le fichier — voir mettre_en_forme_principal().
+            colonnes_annees = _colonnes_annees(df_table)
+            if "Mesure" in df_table.columns and colonnes_annees:
+                idx_colonnes_annees = [df_table.columns.get_loc(c) + 1 for c in colonnes_annees]
+                for i, valeur_mesure in enumerate(df_table["Mesure"]):
+                    if valeur_mesure == "Valeur":
+                        ligne_excel = i + 3  # +1 (1-index) +1 (note) +1 (en-tête)
+                        for col_idx in idx_colonnes_annees:
+                            ws.cell(ligne_excel, col_idx).number_format = "#,##0"
 
             ws.freeze_panes = "A3"
 
