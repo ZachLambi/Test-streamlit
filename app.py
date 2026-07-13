@@ -32,7 +32,7 @@ from donnees import (
     referentiel_geo, REFERENTIEL_GEO_DISPONIBLE, source_symetrique,
     CATEGORIE_PAYS, CATEGORIE_ETATS, TOUS_PRODUITS,
 )
-from export import exporter_excel, exporter_csv, mettre_en_forme_principal, mettre_en_forme_metrique
+from export import exporter_excel, exporter_csv, mettre_en_forme_principal, mettre_en_forme_metrique, formater_pour_ecran
 
 st.set_page_config(page_title="BDD Universelle", layout="wide")
 
@@ -351,7 +351,7 @@ def _afficher_resultats(source: str, col_resultats, cle_session: str) -> None:
 
         n_groupes = df_principal["Mesure"].eq("Valeur").sum() if "Mesure" in df_principal.columns else len(df_principal)
         st.subheader(f"Résultats — {n_groupes:,} série(s) ({UNITE_PAR_SOURCE.get(source, '?')})")
-        st.dataframe(df_principal, width='stretch', height=420)
+        st.dataframe(formater_pour_ecran(df_principal), width='stretch', height=420)
 
         if avec_part_marche:
             st.caption("Part de marché (%) — tableau séparé, une colonne par année")

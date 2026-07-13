@@ -45,6 +45,48 @@ def _colonnes_annees(df: pd.DataFrame) -> list[str]:
     return [c for c in df.columns if c.isdigit() and len(c) == 4]
 
 
+def _formater_montant(x) -> str | None:
+    """Formate un montant avec des espaces insécables comme séparateur de
+    milliers (ex: 1356867 -> '1 356 867'), convention typographique
+    française — U+00A0, garanti peu importe le navigateur/OS, contrairement
+    au format Excel qui dépend des paramètres régionaux de qui l'ouvre."""
+    if x is None or pd.isna(x):
+        return None
+    return f"{x:,.0f}".replace(",", "\u00a0")
+
+
+def formater_pour_ecran(df_principal: pd.DataFrame) -> pd.DataFrame:
+    """Copie du tableau principal (déjà mis en forme, valeurs NUMÉRIQUES)
+    où les cellules de la ligne 'Valeur' deviennent du texte avec espace
+    insécable — pour l'affichage à l'écran SEULEMENT. Les exports (Excel,
+    CSV) continuent d'utiliser la version numérique d'origine, pas
+    celle-ci — c'est la seule différence entre écran et export dans cette
+    app, faite exprès (Excel garde de vrais nombres utilisables, l'écran
+    garantit le séparateur que Streamlit ne peut pas offrir nativement).
+
+    Toute la colonne (pas seulement la ligne Valeur) est convertie en texte
+    homogène — une colonne qui mélange str (Valeur) et float (Variation)
+    fait planter la sérialisation interne de Streamlit vers Arrow (elle
+    s'en sort par un correctif automatique, mais avec une erreur bruyante
+    dans les logs) — éviter le mélange de types est plus propre que de
+    compter sur ce correctif."""
+    if df_principal.empty or "Mesure" not in df_principal.columns:
+        return df_principal
+    df = df_principal.copy()
+    colonnes_annees = _colonnes_annees(df)
+
+    def _formater_cellule(x, mesure: str):
+        if pd.isna(x):
+            return None
+        return _formater_montant(x) if mesure == "Valeur" else f"{x:.2f}"
+
+    for col in colonnes_annees:
+        df[col] = [
+            _formater_cellule(x, mesure) for x, mesure in zip(df[col], df["Mesure"])
+        ]
+    return df
+
+
 def mettre_en_forme_principal(
     df: pd.DataFrame, noms_geo: dict[str, str], avec_variation: bool
 ) -> pd.DataFrame:
