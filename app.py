@@ -64,6 +64,13 @@ def _libelle_partenaire(code: str, type_partenaire: str, noms: dict[str, str]) -
     return noms.get(code, code)
 
 
+def _trier_par_nom(entites: list[tuple[str, str]], noms_geo: dict[str, str]) -> list[tuple[str, str]]:
+    """Trie une liste de (code, type) par NOM affiché, alphabétique — pas
+    par code (l'ordre par défaut de lister_entites_cote), qui ne
+    correspond à l'alphabet que par coïncidence."""
+    return sorted(entites, key=lambda ct: _libelle_partenaire(ct[0], ct[1], noms_geo).casefold())
+
+
 TOTAL_PRODUITS = "Total (tous les produits)"
 _LIBELLES_NIVEAU_HS = {2: "SH2 (chapitre)", 4: "SH4 (position)", 6: "SH6 (sous-position — détail exact)"}
 
@@ -141,63 +148,72 @@ def _selecteur_codes_hs(source: str) -> tuple[list[str] | None, bool]:
 def _selecteur_cote_a(source: str, entites_a: list[tuple[str, str]], noms_geo: dict[str, str]):
     """Côté domestique. Retourne (codes: list|None, agreger: bool).
     Si une seule valeur est possible pour cette source (ex: ISQ = Québec
-    toujours), n'affiche RIEN — pas de sélecteur pour un choix qui n'existe pas."""
+    toujours), n'affiche RIEN — pas de sélecteur pour un choix qui n'existe pas.
+
+    'Total (Canada)'/'Total (États-Unis)' est la PREMIÈRE option d'un seul
+    menu (pas une case à cocher séparée ni un choix radio exclusif) — se
+    combine avec une sélection précise plutôt que de la remplacer, même
+    principe que pour les codes HS."""
     if len(entites_a) <= 1:
         return None, False
 
     libelle_total = LIBELLE_TOTAL_COTE_A.get(source, "Total")
-    mode = st.radio(
-        "Domestique", options=[libelle_total, "Choisir précisément"],
-        key=f"cote_a_mode_{source}",
-    )
-    if mode == libelle_total:
-        return None, True
+    entites_triees = _trier_par_nom(entites_a, noms_geo)
+    options = [libelle_total] + [_libelle_partenaire(c, t, noms_geo) for c, t in entites_triees]
+    libelle_vers_code = {_libelle_partenaire(c, t, noms_geo): c for c, t in entites_triees}
 
-    options = [_libelle_partenaire(c, t, noms_geo) for c, t in entites_a]
-    libelle_vers_code = {_libelle_partenaire(c, t, noms_geo): c for c, t in entites_a}
     choix = st.multiselect(
-        "Choisir précisément", options=options, key=f"cote_a_choix_{source}",
-        help="Vide = détail de toutes les entités disponibles.",
+        "Domestique", options=options, key=f"cote_a_{source}",
+        help=f"'{libelle_total}' somme tout en une ligne. Se combine avec une "
+             "sélection précise ci-dessous plutôt que de la remplacer.",
     )
-    codes = [libelle_vers_code[lbl] for lbl in choix] or None
-    return codes, False
+    agreger = libelle_total in choix
+    codes = [libelle_vers_code[lbl] for lbl in choix if lbl != libelle_total]
+    return (codes or None), agreger
+
+
+TOTAL_PAYS = "Total (tous les pays)"
 
 
 def _selecteur_cote_b(source: str, entites_b: list[tuple[str, str]], noms_geo: dict[str, str]):
     """Côté partenaire. Retourne (codes: list|None, agreger: bool).
     Pays et États sont DEUX menus indépendants dont les sélections se
     combinent (pas un choix exclusif) — États absent si la source n'a
-    aucun partenaire de type ETAT_US (ex: Census)."""
+    aucun partenaire de type ETAT_US (ex: Census).
+
+    'Total (tous les pays)' est la PREMIÈRE option du menu PAYS uniquement
+    — pas une case à cocher séparée, et pas dupliqué dans le menu États :
+    pour le total des États-Unis spécifiquement, sélectionner 'États-Unis'
+    directement dans le menu Pays suffit déjà (l'agrégat pays existe comme
+    entité à part entière)."""
     pays = [(c, t) for c, t in entites_b if t == "PAYS"]
     etats = [(c, t) for c, t in entites_b if t == "ETAT_US"]
     a_des_etats = len(etats) > 0
 
-    agreger = st.checkbox(
-        "Tous les partenaires (somme, exclut le détail des états)",
-        key=f"agreger_b_{source}",
-        help="Somme tous les pays en une seule ligne — exclut les états, "
-             "déjà comptés dans l'agrégat pays (évite le double comptage). "
-             "Se combine avec une sélection précise ci-dessous plutôt que "
-             "de la remplacer : les deux apparaissent dans le résultat.",
-    )
+    pays_tries = _trier_par_nom(pays, noms_geo)
+    options_pays = [TOTAL_PAYS] + [_libelle_partenaire(c, t, noms_geo) for c, t in pays_tries]
+    libelle_vers_code_pays = {_libelle_partenaire(c, t, noms_geo): c for c, t in pays_tries}
 
-    codes_choisis: list[str] = []
-
-    options_pays = [_libelle_partenaire(c, t, noms_geo) for c, t in pays]
-    libelle_vers_code_pays = {_libelle_partenaire(c, t, noms_geo): c for c, t in pays}
     choix_pays = st.multiselect(
         CATEGORIE_PAYS, options=options_pays, key=f"cote_b_pays_{source}",
-        help="Vide = tous les pays en détail.",
+        help=f"'{TOTAL_PAYS}' somme tous les pays en une ligne (exclut les "
+             "états, déjà comptés dans l'agrégat pays — évite le double "
+             "comptage). Se combine avec une sélection précise plutôt que "
+             "de la remplacer.",
     )
-    codes_choisis += [libelle_vers_code_pays[lbl] for lbl in choix_pays]
+    agreger = TOTAL_PAYS in choix_pays
+    codes_choisis = [libelle_vers_code_pays[lbl] for lbl in choix_pays if lbl != TOTAL_PAYS]
 
     if a_des_etats:
-        options_etats = [_libelle_partenaire(c, t, noms_geo) for c, t in etats]
-        libelle_vers_code_etats = {_libelle_partenaire(c, t, noms_geo): c for c, t in etats}
+        etats_tries = _trier_par_nom(etats, noms_geo)
+        options_etats = [_libelle_partenaire(c, t, noms_geo) for c, t in etats_tries]
+        libelle_vers_code_etats = {_libelle_partenaire(c, t, noms_geo): c for c, t in etats_tries}
         choix_etats = st.multiselect(
             CATEGORIE_ETATS, options=options_etats, key=f"cote_b_etats_{source}",
             help="Vide = tous les états en détail. Se combine avec la "
-                 "sélection de pays ci-dessus (pas exclusif).",
+                 "sélection de pays ci-dessus (pas exclusif). Pour le total "
+                 "des États-Unis, sélectionner 'États-Unis' dans Pays plutôt "
+                 "que d'agréger les états ici.",
         )
         codes_choisis += [libelle_vers_code_etats[lbl] for lbl in choix_etats]
 
@@ -225,36 +241,39 @@ def _extraire_combine(
     partenaires_b=None, agreger_b=False,
     codes_hs=None, agreger_produits=False,
 ) -> pd.DataFrame:
-    """'Total' n'est PAS exclusif sur les deux axes qui l'offrent — codes
-    HS précis (produits) ET partenaires précis (côté B, Pays/États). Si
-    'Total' est coché EN MÊME TEMPS qu'une sélection précise sur ce même
+    """'Total' n'est PAS exclusif sur les TROIS axes qui l'offrent — côté A
+    (domestique), côté B (partenaires, Pays uniquement), et produits (HS).
+    Si 'Total' est coché EN MÊME TEMPS qu'une sélection précise sur ce même
     axe, les deux apparaissent dans le résultat plutôt que l'un ou l'autre.
 
     Implémenté comme le PRODUIT CARTÉSIEN des modes actifs de chaque axe
     (voir _modes_axe) — une extraction+regroupement par combinaison, puis
-    concaténation. Le côté A (domestique) n'est PAS doublé ici : son
-    propre agreger_a/partenaires_a est simplement transmis tel quel à
-    chaque combinaison (pas demandé à être rendu non exclusif)."""
-    modes_hs = _modes_axe(agreger_produits, codes_hs)
+    concaténation. Jusqu'à 2×2×2=8 combinaisons si les trois axes ont
+    Total + précis actifs simultanément — en pratique presque toujours
+    beaucoup moins, chaque axe inactif ne comptant que pour 1 mode."""
+    modes_a = _modes_axe(agreger_a, partenaires_a)
     modes_b = _modes_axe(agreger_b, partenaires_b)
+    modes_hs = _modes_axe(agreger_produits, codes_hs)
 
     morceaux = []
-    for type_hs, valeurs_hs in modes_hs:
+    for type_a, valeurs_a in modes_a:
         for type_b, valeurs_b in modes_b:
-            df = extraire(
-                sources=[source], annees=annees, flux=flux,
-                partenaires_a=partenaires_a, agreger_a=agreger_a,
-                partenaires_b=(valeurs_b if type_b == "precis" else None),
-                hs6_prefixes=(valeurs_hs if type_hs == "precis" else None),
-            )
-            df = regrouper(
-                df,
-                hs6_prefixes=(valeurs_hs if type_hs == "precis" else None),
-                agreger_produits=(type_hs == "total"),
-                agreger_a=agreger_a,
-                agreger_b=(type_b == "total"),
-            )
-            morceaux.append(df)
+            for type_hs, valeurs_hs in modes_hs:
+                df = extraire(
+                    sources=[source], annees=annees, flux=flux,
+                    partenaires_a=(valeurs_a if type_a == "precis" else None),
+                    agreger_a=(type_a == "total"),
+                    partenaires_b=(valeurs_b if type_b == "precis" else None),
+                    hs6_prefixes=(valeurs_hs if type_hs == "precis" else None),
+                )
+                df = regrouper(
+                    df,
+                    hs6_prefixes=(valeurs_hs if type_hs == "precis" else None),
+                    agreger_produits=(type_hs == "total"),
+                    agreger_a=(type_a == "total"),
+                    agreger_b=(type_b == "total"),
+                )
+                morceaux.append(df)
 
     if not morceaux:
         return pd.DataFrame()
@@ -380,8 +399,9 @@ def afficher_onglet_symetrique(source: str) -> None:
             )
 
         with _section("Géographie"):
-            options = [_libelle_partenaire(c, t, noms_geo) for c, t in entites]
-            libelle_vers_code = {_libelle_partenaire(c, t, noms_geo): c for c, t in entites}
+            entites_triees = _trier_par_nom(entites, noms_geo)
+            options = [_libelle_partenaire(c, t, noms_geo) for c, t in entites_triees]
+            libelle_vers_code = {_libelle_partenaire(c, t, noms_geo): c for c, t in entites_triees}
 
             choix_1 = st.multiselect(
                 "Pays 1", options=options, key=f"pays1_{source}",
