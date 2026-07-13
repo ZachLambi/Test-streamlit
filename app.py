@@ -32,7 +32,7 @@ from donnees import (
     referentiel_geo, REFERENTIEL_GEO_DISPONIBLE, source_symetrique,
     CATEGORIE_PAYS, CATEGORIE_ETATS, TOUS_PRODUITS,
 )
-from export import exporter_excel, exporter_csv
+from export import exporter_excel, exporter_csv, mettre_en_forme_large
 
 st.set_page_config(page_title="BDD Universelle", layout="wide")
 
@@ -340,20 +340,22 @@ def _afficher_resultats(source: str, col_resultats, cle_session: str) -> None:
             st.info("Configure tes filtres à gauche, puis clique **Extraire**.")
             return
 
-        st.subheader(f"Résultats — {len(df):,} lignes ({UNITE_PAR_SOURCE.get(source, '?')})")
-        st.dataframe(df, width='stretch', height=420)
+        df_large = mettre_en_forme_large(df, referentiel_geo())
+
+        st.subheader(f"Résultats — {len(df_large):,} lignes ({UNITE_PAR_SOURCE.get(source, '?')})")
+        st.dataframe(df_large, width='stretch', height=420)
 
         col1, col2, _ = st.columns([1, 1, 2])
         with col1:
             st.download_button(
-                "📥 Excel", data=exporter_excel(df, UNITE_PAR_SOURCE),
+                "📥 Excel", data=exporter_excel(df_large, UNITE_PAR_SOURCE.get(source, "?")),
                 file_name=f"extraction_{source.lower()}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 width='stretch', key=f"dl_xlsx_{source}",
             )
         with col2:
             st.download_button(
-                "📥 CSV", data=exporter_csv(df),
+                "📥 CSV", data=exporter_csv(df_large),
                 file_name=f"extraction_{source.lower()}.csv",
                 mime="text/csv", width='stretch', key=f"dl_csv_{source}",
             )
