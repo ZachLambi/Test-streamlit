@@ -28,7 +28,7 @@ import pandas as pd
 from donnees import (
     extraire, regrouper, appliquer_metriques, METRIQUES_DISPONIBLES, UNITE_PAR_SOURCE,
     SOURCES_PARQUET, NIVEAUX_SOURCES, MODE_TEST,
-    lister_flux_disponibles, lister_entites_cote, lister_annees_disponibles, lister_codes_hs,
+    lister_flux_disponibles, lister_entites_cote, lister_annees_disponibles, codes_hs_par_niveau,
     referentiel_geo, REFERENTIEL_GEO_DISPONIBLE, source_symetrique,
     CATEGORIE_PAYS, CATEGORIE_ETATS,
 )
@@ -65,59 +65,79 @@ def _libelle_partenaire(code: str, type_partenaire: str, noms: dict[str, str]) -
 
 
 TOTAL_PRODUITS = "Total (tous les produits)"
+_LIBELLES_NIVEAU_HS = {2: "SH2 (chapitre)", 4: "SH4 (position)", 6: "SH6 (sous-position — détail exact)"}
 
 
-def _ajouter_codes_hs_colles(cle_multiselect: str, cle_texte: str) -> None:
-    """Callback du champ 'coller des codes' — fusionne les codes tapés
-    (séparés par virgule) dans la sélection déjà présente du multiselect,
-    puis vide le champ. Fonctionne pour des codes/préfixes qui ne sont PAS
-    forcément des HS6 exacts déjà connus (ex: taper '87' comme préfixe
-    HS2) — voir _selecteur_codes_hs() pour comment ça reste sélectionnable
-    malgré tout dans le multiselect."""
+def _ajouter_codes_hs_colles(cles_par_niveau: dict[int, str], cle_texte: str) -> None:
+    """Callback du champ 'coller des codes' — route chaque code vers le
+    bon menu (SH2/SH4/SH6) selon SA LONGUEUR en chiffres, pas besoin de
+    choisir le menu à la main. Un code d'une longueur non reconnue (pas 2,
+    4 ou 6 chiffres) est simplement ignoré plutôt que de deviner où le
+    mettre."""
     texte = st.session_state.get(cle_texte, "")
     nouveaux = [c.strip() for c in texte.split(",") if c.strip()]
     if not nouveaux:
         return
-    actuel = st.session_state.get(cle_multiselect, [])
-    st.session_state[cle_multiselect] = list(dict.fromkeys(actuel + nouveaux))  # union, ordre préservé, pas de doublon
+    for code in nouveaux:
+        cle = cles_par_niveau.get(len(code))
+        if cle is None:
+            continue
+        actuel = st.session_state.get(cle, [])
+        if code not in actuel:
+            st.session_state[cle] = actuel + [code]
     st.session_state[cle_texte] = ""
 
 
 def _selecteur_codes_hs(source: str) -> tuple[list[str] | None, bool]:
-    """Sélecteur de codes HS, même esprit que le sélecteur de partenaires :
-    'Total (tous les produits)' toujours en première position, puis les
-    codes HS6 réellement présents dans les données de cette source
-    (recherchables en tapant dans le menu). Un champ séparé permet aussi
-    de coller des codes/préfixes séparés par virgule (Entrée pour les
-    ajouter) — pratique pour un préfixe HS2/HS4 (ex: '87') qui n'est pas
-    lui-même un code HS6 exact et n'apparaîtrait donc pas dans la liste de
-    base; il est ajouté dynamiquement aux options pour rester sélectionnable.
+    """Sélecteur de codes HS à trois niveaux — SH2/SH4/SH6, chacun avec sa
+    propre liste de codes réellement présents dans les données de cette
+    source (dérivés par troncature, pas une nomenclature codée en dur), et
+    dont les sélections se COMBINENT (comme Pays/États) plutôt que de
+    s'écraser entre elles au changement de niveau.
+
+    'Total (tous les produits)' est une case à cocher séparée, pas une
+    entrée dans un des menus — évite l'ambiguïté "dans quel menu la mettre"
+    maintenant qu'il y en a trois.
+
+    Un champ de collage unique route chaque code vers le bon niveau selon
+    sa longueur (ex: coller '87,8703,271019' remplit SH2, SH4 et SH6 en un
+    coup, chacun dans son propre menu).
 
     Retourne (codes_hs: list[str]|None, agreger_produits: bool)."""
-    codes_reels = lister_codes_hs(source)
-    cle_multiselect = f"hs_multiselect_{source}"
+    codes_par_niveau = codes_hs_par_niveau(source)
+    cles_par_niveau = {n: f"hs{n}_{source}" for n in (2, 4, 6)}
     cle_texte = f"hs_texte_{source}"
 
-    deja_selectionnes = st.session_state.get(cle_multiselect, [])
-    options = [TOTAL_PRODUITS] + codes_reels + [
-        c for c in deja_selectionnes if c not in codes_reels and c != TOTAL_PRODUITS
-    ]
+    agreger_produits = st.checkbox(TOTAL_PRODUITS, key=f"hs_total_{source}")
 
-    selection = st.multiselect(
-        "Codes HS", options=options, key=cle_multiselect,
-        help=f"'{TOTAL_PRODUITS}' somme tout en une ligne. Vide = détail de "
-             "tous les produits. Un préfixe (ex: 8703) somme automatiquement "
-             "tous les HS6 sous ce préfixe en une seule ligne.",
-    )
+    codes_choisis: list[str] = []
+    for niveau in (2, 4, 6):
+        cle = cles_par_niveau[niveau]
+        deja_selectionnes = st.session_state.get(cle, [])
+        options = codes_par_niveau[niveau] + [
+            c for c in deja_selectionnes if c not in codes_par_niveau[niveau]
+        ]
+        choix = st.multiselect(
+            _LIBELLES_NIVEAU_HS[niveau], options=options, key=cle,
+            disabled=agreger_produits,
+        )
+        codes_choisis += choix
+
     st.text_input(
-        "Ou coller des codes séparés par virgule (Entrée pour ajouter)",
-        key=cle_texte, on_change=_ajouter_codes_hs_colles, args=(cle_multiselect, cle_texte),
+        "Ou coller des codes séparés par virgule (Entrée pour ajouter — "
+        "routés automatiquement vers SH2/SH4/SH6 selon leur longueur)",
+        key=cle_texte, disabled=agreger_produits,
+        on_change=_ajouter_codes_hs_colles, args=(cles_par_niveau, cle_texte),
+    )
+    st.caption(
+        "Vide = détail complet. Sélectionner un SH2/SH4 somme automatiquement "
+        "tous les SH6 sous ce préfixe en une seule ligne."
     )
 
-    if TOTAL_PRODUITS in selection:
+    if agreger_produits:
         return None, True
 
-    return (selection or None), False
+    return (codes_choisis or None), False
 
 
 def _selecteur_cote_a(source: str, entites_a: list[tuple[str, str]], noms_geo: dict[str, str]):

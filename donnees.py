@@ -158,6 +158,22 @@ def lister_codes_hs(source: str, chemins: dict[str, str] | None = None) -> list[
     return _lister_codes_hs_impl(chemin, _mtime(chemin))
 
 
+def codes_hs_par_niveau(source: str, chemins: dict[str, str] | None = None) -> dict[int, list[str]]:
+    """Retourne {2: [...], 4: [...], 6: [...]} — les codes SH2 (chapitre) et
+    SH4 (position) sont dérivés par TRONCATURE des vrais codes SH6 présents
+    (dédupliqués), pas une nomenclature complète codée en dur. Si un
+    chapitre SH2 n'a aucun produit réellement échangé dans cette source, il
+    n'apparaît simplement pas — cohérent avec le principe déjà appliqué
+    partout ailleurs (années, partenaires) de ne montrer que ce qui existe
+    vraiment dans les données."""
+    codes_6 = lister_codes_hs(source, chemins)
+    return {
+        2: sorted({c[:2] for c in codes_6 if len(c) >= 2}),
+        4: sorted({c[:4] for c in codes_6 if len(c) >= 4}),
+        6: codes_6,
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # RÉFÉRENTIEL GÉOGRAPHIQUE — correspondance code -> nom lisible, + statut actif
 # ═══════════════════════════════════════════════════════════════════════════
