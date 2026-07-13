@@ -26,7 +26,7 @@ import streamlit as st
 import pandas as pd
 
 from donnees import (
-    extraire, regrouper, appliquer_metriques, METRIQUES_DISPONIBLES, UNITE_PAR_SOURCE,
+    extraire, regrouper, appliquer_metriques, appliquer_metriques_avec_recul, METRIQUES_DISPONIBLES, UNITE_PAR_SOURCE,
     SOURCES_PARQUET, NIVEAUX_SOURCES, MODE_TEST,
     lister_flux_disponibles, lister_entites_cote, lister_annees_disponibles, codes_hs_par_niveau,
     referentiel_geo, REFERENTIEL_GEO_DISPONIBLE, source_symetrique,
@@ -353,14 +353,27 @@ def afficher_onglet_directionnel(source: str) -> None:
             st.warning("Coche au moins un flux.")
         else:
             with st.spinner("Extraction en cours..."):
+                # Si la variation annuelle est demandée, va chercher une année
+                # de plus avant la plage choisie — juste pour permettre de
+                # calculer la variation de la toute première année
+                # sélectionnée. Cette année de recul est retirée du résultat
+                # final par appliquer_metriques_avec_recul(), et n'influence
+                # jamais le CAGR (calculé séparément, sur la vraie plage).
+                annee_min_reelle = min(annees_selectionnees)
+                annees_extraction = annees_selectionnees
+                if "variation_annuelle" in metriques_cochees:
+                    annees_extraction = [annee_min_reelle - 1] + annees_selectionnees
+
                 df = _extraire_combine(
-                    source, annees_selectionnees, flux_cochees,
+                    source, annees_extraction, flux_cochees,
                     partenaires_a=partenaires_a, agreger_a=agreger_a,
                     partenaires_b=partenaires_b, agreger_b=agreger_b,
                     codes_hs=codes_hs, agreger_produits=agreger_produits,
                 )
                 if metriques_cochees:
-                    df = appliquer_metriques(df, metriques_cochees, cagr_n_annees=cagr_n_annees)
+                    df = appliquer_metriques_avec_recul(
+                        df, metriques_cochees, annee_min_reelle, cagr_n_annees=cagr_n_annees
+                    )
             st.session_state[cle_session] = df
 
     _afficher_resultats(source, col_resultats, cle_session)
@@ -441,13 +454,20 @@ def afficher_onglet_symetrique(source: str) -> None:
             st.warning("Coche au moins un flux.")
         else:
             with st.spinner("Extraction en cours..."):
+                annee_min_reelle = min(annees_selectionnees)
+                annees_extraction = annees_selectionnees
+                if "variation_annuelle" in metriques_cochees:
+                    annees_extraction = [annee_min_reelle - 1] + annees_selectionnees
+
                 df = _extraire_combine(
-                    source, annees_selectionnees, flux_cochees,
+                    source, annees_extraction, flux_cochees,
                     partenaires_a=partenaires_1, partenaires_b=partenaires_2,
                     codes_hs=codes_hs, agreger_produits=agreger_produits,
                 )
                 if metriques_cochees:
-                    df = appliquer_metriques(df, metriques_cochees, cagr_n_annees=cagr_n_annees)
+                    df = appliquer_metriques_avec_recul(
+                        df, metriques_cochees, annee_min_reelle, cagr_n_annees=cagr_n_annees
+                    )
             st.session_state[cle_session] = df
 
     _afficher_resultats(source, col_resultats, cle_session)

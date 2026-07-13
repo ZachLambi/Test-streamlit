@@ -596,3 +596,37 @@ def appliquer_metriques(df: pd.DataFrame, cles_metriques: list[str], cagr_n_anne
             _, fonction = METRIQUES_DISPONIBLES[cle]
             resultat = fonction(resultat, cagr_n_annees) if cle == "cagr" else fonction(resultat)
     return resultat
+
+
+def appliquer_metriques_avec_recul(
+    df: pd.DataFrame, cles_metriques: list[str], annee_min_selectionnee: int, cagr_n_annees: int = 5
+) -> pd.DataFrame:
+    """Comme appliquer_metriques(), mais gère le cas où `df` contient UNE
+    année de plus AVANT `annee_min_selectionnee` (récupérée exprès pour
+    permettre de calculer la variation annuelle de la toute première année
+    sélectionnée, même si sa valeur de référence est hors de la plage
+    choisie par l'utilisateur — ex: plage 2014-2025 mais donnée 2013
+    disponible, la variation de 2014 doit pouvoir se calculer).
+
+    La variation annuelle est calculée AVANT de retirer cette année de
+    recul (elle a besoin d'elle), puis l'année de recul est retirée du
+    résultat. Les AUTRES métriques (CAGR...) sont calculées ENSUITE, sur
+    le résultat déjà retiré de l'année de recul — pour qu'elles restent
+    calculées strictement sur la plage réellement sélectionnée, sans que
+    l'année de recul ne vienne fausser leur fenêtre (ex: CAGR sur 5 ans
+    ne doit pas silencieusement devenir un CAGR sur 6 ans à cause d'une
+    année ajoutée seulement pour la variation)."""
+    if df.empty:
+        return df
+
+    resultat = df
+    if "variation_annuelle" in cles_metriques:
+        resultat = ajouter_variation_annuelle(resultat)
+
+    resultat = resultat[resultat["annee"] >= annee_min_selectionnee].copy()
+
+    autres_cles = [c for c in cles_metriques if c != "variation_annuelle"]
+    if autres_cles:
+        resultat = appliquer_metriques(resultat, autres_cles, cagr_n_annees=cagr_n_annees)
+
+    return resultat
