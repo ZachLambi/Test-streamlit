@@ -2,11 +2,14 @@
 app.py — Dashboard bdd universelle
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Un onglet par source (ISQ/CIMT/Census/BACI), chacun avec ses propres
-filtres (années, flux, partenaires, codes HS) et sa propre liste de
-partenaires — la liste de flux disponibles et la liste de partenaires sont
-calculées dynamiquement depuis les données de CHAQUE source (pas de liste
-codée en dur : CIMT n'a pas de flux TE, ISQ/CIMT ont un mélange
-pays/états américains comme partenaires, BACI n'a que des pays).
+filtres (années, flux, partenaires, codes HS) — plage d'années, liste de
+flux et liste de partenaires calculées dynamiquement depuis les données de
+CHAQUE source (pas de valeur codée en dur).
+
+Options d'agrégation : "Tous les produits" (somme tous les HS confondus) et
+"Tous les pays" (somme tous les pays, exclut le détail états-Unis pour
+éviter le double comptage). Saisir un préfixe HS (ex: 8703) somme
+automatiquement tous les HS6 sous ce préfixe en une seule ligne.
 
 À lancer avec :
     pip install -r requirements.txt
@@ -19,9 +22,11 @@ import streamlit as st
 import pandas as pd
 
 from donnees import (
-    extraire, appliquer_metriques, METRIQUES_DISPONIBLES, UNITE_PAR_SOURCE,
+    extraire, regrouper, appliquer_metriques, METRIQUES_DISPONIBLES, UNITE_PAR_SOURCE,
     SOURCES_PARQUET, NIVEAUX_SOURCES, MODE_TEST,
-    lister_flux_disponibles, lister_partenaires,
+    lister_flux_disponibles, lister_partenaires, lister_annees_disponibles,
+    referentiel_geo, REFERENTIEL_GEO_DISPONIBLE,
+    TOUS_PARTENAIRES, TOUS_PRODUITS,
 )
 from export import exporter_excel, exporter_csv
 
@@ -37,9 +42,16 @@ if MODE_TEST:
         icon="🧪",
     )
 
+if not REFERENTIEL_GEO_DISPONIBLE:
+    st.caption(
+        "ℹ️ Référentiel géographique non trouvé (referentiel_geo.csv) — "
+        "les partenaires s'affichent par code plutôt que par nom."
+    )
 
-def _libelle_partenaire(code: str, type_partenaire: str) -> str:
-    return f"{code} ({type_partenaire})"
+
+def _libelle_partenaire(code: str, type_partenaire: str, noms: dict[str, str]) -> str:
+    nom = noms.get(code, code)
+    return f"{nom} — {code} ({type_partenaire})" if nom != code else f"{code} ({type_partenaire})"
 
 
 def afficher_onglet_source(source: str) -> None:
@@ -54,6 +66,8 @@ def afficher_onglet_source(source: str) -> None:
 
     flux_disponibles = lister_flux_disponibles(source)
     partenaires_disponibles = lister_partenaires(source)
+    annee_min_dispo, annee_max_dispo = lister_annees_disponibles(source)
+    noms_geo = referentiel_geo()
 
     if not flux_disponibles:
         st.error(f"Aucune donnée disponible pour {source}.")
@@ -64,32 +78,52 @@ def afficher_onglet_source(source: str) -> None:
     with col_filtres:
         st.subheader("Filtres")
 
-        annee_min, annee_max = st.slider(
-            "Années", min_value=2011, max_value=2025, value=(2019, 2025),
-            key=f"annees_{source}",
-        )
-        annees_selectionnees = list(range(annee_min, annee_max + 1))
+        if annee_min_dispo == annee_max_dispo:
+            st.caption(f"Année disponible : {annee_min_dispo}")
+            annees_selectionnees = [annee_min_dispo]
+        else:
+            annee_min, annee_max = st.slider(
+                "Années", min_value=annee_min_dispo, max_value=annee_max_dispo,
+                value=(annee_min_dispo, annee_max_dispo),
+                key=f"annees_{source}",
+            )
+            annees_selectionnees = list(range(annee_min, annee_max + 1))
 
         flux_cochees = st.multiselect(
             "Flux", options=flux_disponibles, default=flux_disponibles,
             key=f"flux_{source}",
         )
 
-        options_partenaires = [_libelle_partenaire(c, t) for c, t in partenaires_disponibles]
-        libelle_vers_code = {_libelle_partenaire(c, t): c for c, t in partenaires_disponibles}
+        options_partenaires = [TOUS_PARTENAIRES] + [
+            _libelle_partenaire(c, t, noms_geo) for c, t in partenaires_disponibles
+        ]
+        libelle_vers_code = {
+            _libelle_partenaire(c, t, noms_geo): c for c, t in partenaires_disponibles
+        }
         partenaires_choisis_libelles = st.multiselect(
             "Partenaires", options=options_partenaires,
             key=f"partenaires_{source}",
-            help="Vide = tous les partenaires. Filtre sur origine OU destination.",
+            help="Vide = tous les partenaires en détail. Filtre sur origine OU "
+                 "destination. L'option 🌐 Tous les pays somme tout en excluant "
+                 "les états américains (déjà comptés dans l'agrégat pays).",
         )
-        partenaires_choisis = [libelle_vers_code[lbl] for lbl in partenaires_choisis_libelles] or None
+        agreger_partenaires = TOUS_PARTENAIRES in partenaires_choisis_libelles
+        partenaires_choisis = None
+        if not agreger_partenaires and partenaires_choisis_libelles:
+            partenaires_choisis = [libelle_vers_code[lbl] for lbl in partenaires_choisis_libelles]
 
+        agreger_produits = st.checkbox(TOUS_PRODUITS, key=f"tous_produits_{source}")
         codes_hs_saisis = st.text_input(
             "Codes HS (préfixes séparés par virgule, ex: 8703,27)",
             key=f"hs_{source}",
-            help="Un préfixe HS2 (ex: 27) inclut tous les HS6 qui commencent par ces chiffres.",
+            disabled=agreger_produits,
+            help="Saisir un préfixe (ex: 8703) somme automatiquement tous les "
+                 "HS6 sous ce préfixe en une seule ligne — pas un simple filtre. "
+                 "Un code HS6 complet (6 chiffres) donne le détail exact de ce produit.",
         )
-        codes_hs = [c.strip() for c in codes_hs_saisis.split(",") if c.strip()] or None
+        codes_hs = None if agreger_produits else (
+            [c.strip() for c in codes_hs_saisis.split(",") if c.strip()] or None
+        )
 
         st.divider()
         st.subheader("Métriques")
@@ -119,6 +153,13 @@ def afficher_onglet_source(source: str) -> None:
                     flux=flux_cochees,
                     partenaires=partenaires_choisis,
                     hs6_prefixes=codes_hs,
+                    agreger_partenaires=agreger_partenaires,
+                )
+                df = regrouper(
+                    df,
+                    hs6_prefixes=codes_hs,
+                    agreger_produits=agreger_produits,
+                    agreger_partenaires=agreger_partenaires,
                 )
                 if metriques_cochees:
                     df = appliquer_metriques(df, metriques_cochees, cagr_n_annees=cagr_n_annees)
