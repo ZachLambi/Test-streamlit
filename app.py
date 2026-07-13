@@ -59,8 +59,9 @@ LIBELLE_TOTAL_COTE_A = {"CIMT": "Total (Canada)", "CENSUS": "Total (États-Unis)
 
 
 def _libelle_partenaire(code: str, type_partenaire: str, noms: dict[str, str]) -> str:
-    nom = noms.get(code, code)
-    return f"{nom} — {code} ({type_partenaire})" if nom != code else f"{code} ({type_partenaire})"
+    """Nom seul (repli sur le code si le référentiel géo n'a pas d'entrée
+    pour ce code) — pas de suffixe code/type dans l'affichage."""
+    return noms.get(code, code)
 
 
 def _selecteur_cote_a(source: str, entites_a: list[tuple[str, str]], noms_geo: dict[str, str]):
@@ -90,36 +91,43 @@ def _selecteur_cote_a(source: str, entites_a: list[tuple[str, str]], noms_geo: d
 
 def _selecteur_cote_b(source: str, entites_b: list[tuple[str, str]], noms_geo: dict[str, str]):
     """Côté partenaire. Retourne (codes: list|None, agreger: bool).
-    Radio Tous les partenaires / Pays / États (États absent si la source
-    n'a aucun partenaire de type ETAT_US — ex: Census)."""
+    Pays et États sont DEUX menus indépendants dont les sélections se
+    combinent (pas un choix exclusif) — États absent si la source n'a
+    aucun partenaire de type ETAT_US (ex: Census)."""
     pays = [(c, t) for c, t in entites_b if t == "PAYS"]
     etats = [(c, t) for c, t in entites_b if t == "ETAT_US"]
     a_des_etats = len(etats) > 0
 
-    options_categorie = ["Tous les partenaires", CATEGORIE_PAYS] + (
-        [CATEGORIE_ETATS] if a_des_etats else []
+    agreger = st.checkbox(
+        "Tous les partenaires (somme, exclut le détail des états)",
+        key=f"agreger_b_{source}",
+        help="Somme tous les pays en une seule ligne — exclut les états, "
+             "déjà comptés dans l'agrégat pays (évite le double comptage).",
     )
-    categorie = st.radio(
-        "Partenaires", options=options_categorie,
-        key=f"categorie_partenaires_{source}",
-        help="Tous les partenaires = somme de tous les pays en une ligne "
-             "(exclut le détail des états, déjà compté dans l'agrégat pays). "
-             "Pays / États = choisir des partenaires précis dans cette catégorie.",
-    )
-
-    if categorie == "Tous les partenaires":
+    if agreger:
         return None, True
 
-    sous_liste = pays if categorie == CATEGORIE_PAYS else etats
-    options = [_libelle_partenaire(c, t, noms_geo) for c, t in sous_liste]
-    libelle_vers_code = {_libelle_partenaire(c, t, noms_geo): c for c, t in sous_liste}
-    choix = st.multiselect(
-        f"Choisir des {categorie.lower()} précis", options=options,
-        key=f"cote_b_choix_{categorie}_{source}",
-        help="Vide = détail de tous les partenaires de cette catégorie.",
+    codes_choisis: list[str] = []
+
+    options_pays = [_libelle_partenaire(c, t, noms_geo) for c, t in pays]
+    libelle_vers_code_pays = {_libelle_partenaire(c, t, noms_geo): c for c, t in pays}
+    choix_pays = st.multiselect(
+        CATEGORIE_PAYS, options=options_pays, key=f"cote_b_pays_{source}",
+        help="Vide = tous les pays en détail.",
     )
-    codes = [libelle_vers_code[lbl] for lbl in choix] or None
-    return codes, False
+    codes_choisis += [libelle_vers_code_pays[lbl] for lbl in choix_pays]
+
+    if a_des_etats:
+        options_etats = [_libelle_partenaire(c, t, noms_geo) for c, t in etats]
+        libelle_vers_code_etats = {_libelle_partenaire(c, t, noms_geo): c for c, t in etats}
+        choix_etats = st.multiselect(
+            CATEGORIE_ETATS, options=options_etats, key=f"cote_b_etats_{source}",
+            help="Vide = tous les états en détail. Se combine avec la "
+                 "sélection de pays ci-dessus (pas exclusif).",
+        )
+        codes_choisis += [libelle_vers_code_etats[lbl] for lbl in choix_etats]
+
+    return (codes_choisis or None), False
 
 
 def afficher_onglet_directionnel(source: str) -> None:
