@@ -34,7 +34,27 @@ import streamlit as st
 
 from donnees import MODE_TEST, REFERENTIEL_GEO_DISPONIBLE
 
-st.set_page_config(page_title="BDD Universelle", layout="wide")
+st.set_page_config(page_title="BDD Universelle", layout="wide", initial_sidebar_state="expanded")
+
+# Sidebar toujours agrandie à son max — deux volets :
+#   1. initial_sidebar_state="expanded" ci-dessus : ne démarre jamais repliée
+#      (comportement par défaut "auto" pouvait la replier sur petit écran).
+#   2. CSS ci-dessous : largeur fixe généreuse plutôt que la largeur par
+#      défaut de Streamlit (assez étroite, changée encore récemment en
+#      1.46 -- voir issue streamlit/streamlit#11980). min-width == max-width
+#      empêche aussi le redimensionnement manuel (glisser le bord) de la
+#      rétrécir par accident.
+st.markdown(
+    """
+    <style>
+    [data-testid="stSidebar"] {
+        min-width: 440px !important;
+        max-width: 440px !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 st.title("Base de données commerciale universelle")
 st.caption("ISQ · CIMT · Census · BACI — extraction unifiée, calculs préconfigurés, export prêt à l'emploi")

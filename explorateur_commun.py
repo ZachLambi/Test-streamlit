@@ -15,10 +15,10 @@ CHANGEMENTS UI (14 juillet 2026, vs l'ancien app.py à onglet unique) :
   st.sidebar — les résultats récupèrent toute la largeur principale au
   lieu de ~69%. Cohabite bien avec le widget de navigation (nav en haut
   de la sidebar, filtres en dessous, par page).
-- Section "Métriques" repliée dans un st.expander (fermé par défaut) —
-  c'est la section la moins consultée à chaque requête, elle n'a plus
-  besoin d'occuper de l'espace visuel permanent comme Flux/Géographie/
-  Produits.
+- Section "Métriques" en section normale (comme Flux/Géographie/Produits),
+  pas un expander repliable — cohérence visuelle demandée : toutes les
+  sections de filtres ont le même traitement, pas de comportement
+  spécial pour celle-ci.
 - Ligne de résumé compacte juste au-dessus du bouton Extraire, pour voir
   d'un coup d'œil la sélection active sans remonter dans chaque section
   (plus utile maintenant que les filtres sont dans la sidebar, donc moins
@@ -351,7 +351,7 @@ def afficher_onglet_directionnel(source: str) -> None:
         with _section("Produits"):
             codes_hs, agreger_produits = _selecteur_codes_hs(source)
 
-        with st.expander("Métriques", expanded=False):
+        with _section("Métriques"):
             metriques_cochees = [
                 cle for cle, (libelle, _) in METRIQUES_DISPONIBLES.items()
                 if st.checkbox(libelle, value=(cle == "variation_annuelle"), key=f"metrique_{cle}_{source}")
@@ -461,7 +461,7 @@ def afficher_onglet_symetrique(source: str) -> None:
         with _section("Produits"):
             codes_hs, agreger_produits = _selecteur_codes_hs(source)
 
-        with st.expander("Métriques", expanded=False):
+        with _section("Métriques"):
             metriques_cochees = [
                 cle for cle, (libelle, _) in METRIQUES_DISPONIBLES.items()
                 if st.checkbox(libelle, value=(cle == "variation_annuelle"), key=f"metrique_{cle}_{source}")
