@@ -433,9 +433,14 @@ def regrouper(
                             pour CIMT — pas de risque de double comptage ici,
                             les provinces/états sont mutuellement exclusifs)
       - agreger_b=True  -> côté partenaire sommé en 'TOTAL', restreint aux
-                            entités de type PAYS (exclut les états déjà
-                            comptés dans l'agrégat pays — évite le double
-                            comptage)
+                            entités de type PAYS ET AUTRE (exclut UNIQUEMENT
+                            les états ETAT_US, déjà comptés dans l'agrégat
+                            pays — évite le double comptage). AUTRE (A1
+                            Réimportations, A3 Indéterminé...) EST inclus :
+                            ce sont de vraies valeurs commerciales qui ne
+                            sont comptées nulle part ailleurs, contrairement
+                            aux états — les exclure sous-estimerait le total
+                            réel plutôt que d'éviter un double comptage.
       - sinon             -> pas de regroupement pour ce côté (comportement
                               par défaut, une ligne par entité)
     Les deux peuvent être combinés (ex: Total Canada ET Tous les
@@ -468,13 +473,18 @@ def regrouper(
         df.loc[est_de_te, "origine"] = "TOTAL"
         df.loc[~est_de_te, "destination"] = "TOTAL"
 
-    # ── Niveau côté B (partenaire) — filtré aux PAYS pour éviter le
-    # double comptage avec les états déjà présents dans l'agrégat pays
+    # ── Niveau côté B (partenaire) — filtré à PAYS + AUTRE (PAS ETAT_US,
+    # pour éviter le double comptage avec les états déjà présents dans
+    # l'agrégat pays -- ex: C9 États-Unis inclut déjà tous les SXX).
+    # AUTRE (A1/A2/A3) est inclus depuis le 14 juillet 2026 -- exclu par
+    # erreur avant ça, ce qui sous-estimait silencieusement "Total (tous
+    # les pays)" du volume réel des réimportations et indéterminés.
     if agreger_b:
         est_de_te = df["flux"].isin(["DE", "TE"])
+        types_inclus = ["PAYS", "AUTRE"]
         df = df[
-            (est_de_te & (df["type_dest"] == "PAYS"))
-            | (~est_de_te & (df["type_ori"] == "PAYS"))
+            (est_de_te & df["type_dest"].isin(types_inclus))
+            | (~est_de_te & df["type_ori"].isin(types_inclus))
         ].copy()
         df.loc[est_de_te, "destination"] = "TOTAL"
         df.loc[est_de_te, "type_dest"] = "PAYS"
