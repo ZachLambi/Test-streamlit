@@ -81,6 +81,7 @@ pages = {
     ],
     "Rapports sectoriels": [
         st.Page("pages/portrait_defense.py", title="Portrait défense", icon="🛡️"),
+        st.Page("pages/rang_commercial.py", title="Rang commercial", icon="🏆"),
     ],
 }
 
