@@ -223,6 +223,109 @@ REFERENTIEL_GEO_DISPONIBLE = _CHEMIN_REFERENTIEL_CSV.exists()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# TAUX DE CHANGE ANNUEL CAD/USD — CONVERSION DE DEVISE
+# ═══════════════════════════════════════════════════════════════════════════
+# taux_change_cad_usd.csv : (annee, cad_pour_1_usd) -- alimenté par
+# taux_change_update.py (pipeline Colab, API Valet de la Banque du Canada).
+# Directement à la racine du repo, comme referentiel_geo.csv -- un seul
+# fichier plat, pas de sous-dossier dédié.
+_CHEMIN_TAUX_CHANGE_CSV = _ICI / "taux_change_cad_usd.csv"
+
+
+@st.cache_data(show_spinner=False)
+def _charger_taux_change(_mtime_cle: float) -> dict[int, float]:
+    """Retourne {annee: cad_pour_1_usd}. Vide si le CSV est introuvable —
+    les appelants doivent gérer l'absence (pas de conversion possible)."""
+    if _CHEMIN_TAUX_CHANGE_CSV.exists():
+        try:
+            df_taux = pd.read_csv(_CHEMIN_TAUX_CHANGE_CSV)
+            return dict(zip(df_taux["annee"].astype(int), df_taux["cad_pour_1_usd"].astype(float)))
+        except Exception:
+            pass
+    return {}
+
+
+def taux_change() -> dict[int, float]:
+    """Dict {annee: cad_pour_1_usd} — combien de CAD pour 1 USD, cette
+    année-là. Vide si taux_change_cad_usd.csv est introuvable."""
+    mtime = _mtime(str(_CHEMIN_TAUX_CHANGE_CSV)) if _CHEMIN_TAUX_CHANGE_CSV.exists() else 0.0
+    return _charger_taux_change(mtime)
+
+
+TAUX_CHANGE_DISPONIBLE = _CHEMIN_TAUX_CHANGE_CSV.exists()
+
+
+def _devise_native(source: str) -> str:
+    """'CAD' ou 'USD' — la partie DEVISE de UNITE_PAR_SOURCE, en ignorant
+    un éventuel préfixe d'échelle ('milliers USD' pour BACI -> 'USD')."""
+    return "CAD" if UNITE_PAR_SOURCE.get(source, "").upper().startswith("CAD") else "USD"
+
+
+def libelle_unite(source: str, devise_cible: str | None) -> str:
+    """Libellé d'unité à afficher — la devise NATIVE si aucune conversion
+    demandée (devise_cible=None ou déjà la devise native), sinon la devise
+    cible substituée dans le libellé (ex: 'milliers USD' -> 'milliers CAD'
+    pour BACI converti en CAD — seule la devise change, pas l'échelle)."""
+    natif = UNITE_PAR_SOURCE.get(source, "?")
+    natif_devise = _devise_native(source)
+    if not devise_cible or devise_cible == natif_devise:
+        return natif
+    return natif.replace(natif_devise, devise_cible)
+
+
+def convertir_devise(df: pd.DataFrame, devise_cible: str) -> pd.DataFrame:
+    """Convertit la colonne 'valeur' vers devise_cible ('CAD' ou 'USD'),
+    par ligne — chaque ligne utilise SA PROPRE année (colonne 'annee')
+    pour choisir le bon taux, pas un taux unique appliqué à tout le
+    DataFrame (les lignes peuvent couvrir plusieurs années).
+
+    Logique (cad_pour_1_usd = combien de CAD pour 1 USD, cette année) :
+      source native USD, cible CAD : valeur * cad_pour_1_usd
+      source native CAD, cible USD : valeur / cad_pour_1_usd
+      déjà dans la devise cible : valeur inchangée
+
+    'milliers USD' (BACI) : seule la devise est convertie, PAS l'échelle —
+    BACI reste en milliers après conversion (milliers CAD plutôt que
+    milliers USD). Convertir l'échelle serait un choix différent
+    (afficher en dollars pleins plutôt qu'en milliers), pas demandé ici.
+
+    Si le taux de l'année d'une ligne est introuvable dans le CSV, cette
+    ligne n'est PAS convertie (valeur laissée dans sa devise native) —
+    jamais de valeur silencieusement fausse faute de taux disponible.
+    Colonne 'devise_affichee' ajoutée pour que l'UI puisse distinguer les
+    lignes réellement converties de celles restées dans leur devise
+    native faute de taux.
+    """
+    if df.empty or devise_cible not in ("CAD", "USD") or "source" not in df.columns:
+        return df
+
+    df = df.copy()
+    taux_par_annee = taux_change()
+
+    devise_native = df["source"].map(_devise_native)
+    taux = df["annee"].map(taux_par_annee)  # NaN si année absente du CSV
+    valeur = df["valeur"].astype(float)
+
+    vers_cad = (devise_native == "USD") & (devise_cible == "CAD") & taux.notna()
+    vers_usd = (devise_native == "CAD") & (devise_cible == "USD") & taux.notna()
+
+    valeur_convertie = valeur.copy()
+    valeur_convertie.loc[vers_cad] = valeur.loc[vers_cad] * taux.loc[vers_cad]
+    valeur_convertie.loc[vers_usd] = valeur.loc[vers_usd] / taux.loc[vers_usd]
+    df["valeur"] = valeur_convertie
+
+    convertie = vers_cad | vers_usd
+    deja_bonne_devise = devise_native == devise_cible
+    df["devise_affichee"] = devise_native
+    df.loc[convertie, "devise_affichee"] = devise_cible
+    df.loc[~convertie & ~deja_bonne_devise, "devise_affichee"] = (
+        devise_native[~convertie & ~deja_bonne_devise] + " (taux manquant, non converti)"
+    )
+
+    return df
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # CONFIGURATION DES "CÔTÉS" PAR SOURCE
 # ═══════════════════════════════════════════════════════════════════════════
 # Côté A = domestique (province/état canadien-américain fixe ou variable),

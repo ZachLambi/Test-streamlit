@@ -34,6 +34,7 @@ from donnees import (
     lister_flux_disponibles, lister_entites_cote, lister_annees_disponibles, codes_hs_par_niveau,
     referentiel_geo, REFERENTIEL_GEO_DISPONIBLE, source_symetrique,
     CATEGORIE_PAYS, CATEGORIE_ETATS,
+    convertir_devise, libelle_unite,
 )
 from export import exporter_excel, exporter_csv, mettre_en_forme_principal, mettre_en_forme_metrique, formater_pour_ecran
 
@@ -310,6 +311,15 @@ def _afficher_resume_filtres(
     st.caption(" · ".join(morceaux))
 
 
+def _devise_choisie() -> str | None:
+    """Lit le sélecteur global de devise (app.py) — None si 'Native (par
+    source)' ou si le sélecteur n'existe pas encore (première visite d'une
+    page avant que app.py n'ait tourné, cas limite). None = pas de
+    conversion, comportement d'avant l'ajout de cette fonctionnalité."""
+    choix = st.session_state.get("devise_affichage", "Native (par source)")
+    return choix if choix in ("CAD", "USD") else None
+
+
 def afficher_onglet_directionnel(source: str) -> None:
     """ISQ / CIMT / Census — côté A (domestique) + côté B (partenaire).
     Filtres dans la sidebar, résultats en pleine largeur du corps principal."""
@@ -399,6 +409,9 @@ def afficher_onglet_directionnel(source: str) -> None:
                     partenaires_b=partenaires_b, agreger_b=agreger_b,
                     codes_hs=codes_hs, agreger_produits=agreger_produits,
                 )
+                devise_cible = _devise_choisie()
+                if devise_cible:
+                    df = convertir_devise(df, devise_cible)
                 if metriques_cochees:
                     df = appliquer_metriques_avec_recul(
                         df, metriques_cochees, annee_min_reelle, cagr_n_annees=cagr_n_annees
@@ -497,6 +510,9 @@ def afficher_onglet_symetrique(source: str) -> None:
                     partenaires_a=partenaires_1, partenaires_b=partenaires_2,
                     codes_hs=codes_hs, agreger_produits=agreger_produits,
                 )
+                devise_cible = _devise_choisie()
+                if devise_cible:
+                    df = convertir_devise(df, devise_cible)
                 if metriques_cochees:
                     df = appliquer_metriques_avec_recul(
                         df, metriques_cochees, annee_min_reelle, cagr_n_annees=cagr_n_annees
@@ -526,12 +542,26 @@ def _afficher_resultats(source: str, cle_session: str) -> None:
     avec_part_marche = "part_marche_pct" in df.columns
     avec_rang = "rang" in df.columns
 
+    unite_affichee = libelle_unite(source, _devise_choisie())
+    if "devise_affichee" in df.columns:
+        n_non_convertis = df["devise_affichee"].astype(str).str.contains("taux manquant").sum()
+        if n_non_convertis:
+            annees_manquantes = sorted(
+                df.loc[df["devise_affichee"].astype(str).str.contains("taux manquant"), "annee"].unique().tolist()
+            )
+            st.warning(
+                f"⚠️ Taux de change introuvable pour {annees_manquantes} — "
+                f"{n_non_convertis} ligne(s) affichée(s) dans leur devise native "
+                f"plutôt que convertie(s).",
+                icon="⚠️",
+            )
+
     df_principal = mettre_en_forme_principal(df, noms_geo, avec_variation=avec_variation)
     df_part_marche = mettre_en_forme_metrique(df, "part_marche_pct", noms_geo) if avec_part_marche else pd.DataFrame()
     df_rang = mettre_en_forme_metrique(df, "rang", noms_geo) if avec_rang else pd.DataFrame()
 
     n_groupes = df_principal["Mesure"].eq("Valeur").sum() if "Mesure" in df_principal.columns else len(df_principal)
-    st.subheader(f"Résultats — {n_groupes:,} série(s) ({UNITE_PAR_SOURCE.get(source, '?')})")
+    st.subheader(f"Résultats — {n_groupes:,} série(s) ({unite_affichee})")
     st.dataframe(formater_pour_ecran(df_principal), width='stretch', height=420)
 
     if avec_part_marche:
@@ -550,7 +580,7 @@ def _afficher_resultats(source: str, cle_session: str) -> None:
     col1, col2, _ = st.columns([1, 1, 2])
     with col1:
         st.download_button(
-            "📥 Excel", data=exporter_excel(tables_excel, UNITE_PAR_SOURCE.get(source, "?")),
+            "📥 Excel", data=exporter_excel(tables_excel, unite_affichee),
             file_name=f"extraction_{source.lower()}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             width='stretch', key=f"dl_xlsx_{source}",

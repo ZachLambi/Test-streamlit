@@ -22,8 +22,9 @@ sections dans la navigation :
 
 Ce fichier ne contient plus lui-même l'UI d'un onglet — seulement les
 éléments COMMUNS à toutes les pages (config de page, titre global, avis
-mode test/référentiel géo), affichés au-dessus du widget de navigation,
-puis le routeur proprement dit.
+mode test/référentiel géo, sélecteur de devise d'affichage — CAD/USD/
+native, voir donnees.convertir_devise()), affichés au-dessus du widget de
+navigation, puis le routeur proprement dit.
 
 Ce fichier suppose donnees.py, export.py et explorateur_commun.py dans le
 même dossier, et un sous-dossier pages/ contenant les scripts de chaque
@@ -32,7 +33,7 @@ page.
 
 import streamlit as st
 
-from donnees import MODE_TEST, REFERENTIEL_GEO_DISPONIBLE
+from donnees import MODE_TEST, REFERENTIEL_GEO_DISPONIBLE, TAUX_CHANGE_DISPONIBLE
 
 st.set_page_config(page_title="BDD Universelle", layout="wide", initial_sidebar_state="expanded")
 
@@ -70,6 +71,35 @@ if not REFERENTIEL_GEO_DISPONIBLE:
     st.caption(
         "ℹ️ Référentiel géographique non trouvé (referentiel_geo.csv) — "
         "les partenaires s'affichent par code plutôt que par nom."
+    )
+
+# ── Devise d'affichage — RÉGLAGE GLOBAL, pas par page ────────────────────────
+# key="devise_affichage" -> st.session_state["devise_affichage"], lu par
+# chaque page (via explorateur_commun.py) pour convertir 'valeur' avant
+# tout calcul de métrique (variation/CAGR/part de marché/rang doivent
+# porter sur la devise AFFICHÉE, pas sur un mélange devise native + devise
+# choisie -- voir convertir_devise() dans donnees.py).
+#
+# "Native (par source)" reste le défaut -- comportement inchangé tant que
+# personne ne demande explicitement une conversion. Désactivé (options
+# réduites à Native seulement) si taux_change_cad_usd.csv est introuvable,
+# plutôt que d'offrir un choix qui échouerait silencieusement.
+if TAUX_CHANGE_DISPONIBLE:
+    st.radio(
+        "Devise d'affichage",
+        options=["Native (par source)", "CAD", "USD"],
+        horizontal=True, key="devise_affichage",
+        help="ISQ/CIMT sont nativement en CAD, Census/BACI en USD. "
+             "'Native' affiche chaque source dans sa devise d'origine (aucune "
+             "conversion). Choisir CAD ou USD convertit TOUTES les sources "
+             "vers cette devise, année par année, selon le taux de change "
+             "annuel moyen de la Banque du Canada.",
+    )
+else:
+    st.session_state.setdefault("devise_affichage", "Native (par source)")
+    st.caption(
+        "ℹ️ Taux de change non trouvé (taux_change_cad_usd.csv) — "
+        "conversion de devise indisponible, chaque source s'affiche dans sa devise native."
     )
 
 pages = {
