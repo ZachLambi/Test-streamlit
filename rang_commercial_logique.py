@@ -14,6 +14,26 @@ du script original sont repris, pas seulement le plus simple :
   - Rang_vs_provinces         : Québec contre les autres provinces canadiennes
   - Rang_vs_tous_fournisseurs : Québec contre TOUTES les provinces ET tous
     les pays étrangers qui commercent avec l'état visé (nécessite Census)
+
+CORRECTIF (20 juillet 2026) — trois bugs trouvés en conditions réelles (test
+Ohio) :
+  1. Le côté "province" de CIMT dépend du flux (origine pour TI, destination
+     pour DE/TE) -- la première version lisait 'origine' sans condition,
+     donc affichait le partenaire (Ohio) comme "Province" pour les lignes TI.
+     Corrigé : calculer_rangs() calcule maintenant EXPLICITEMENT une colonne
+     'province', flux-consciente, en plus de 'partenaire'.
+  2. CIMT et Census n'ont PAS la même convention de côté pour l'état :
+     CIMT   -- état = côté B (partenaire) : destination pour DE/TE, origine pour TI
+     Census -- état = côté A (domestique) : origine pour DE/TE, destination pour TI
+     (SENS INVERSÉ). La première version utilisait la formule CIMT pour les
+     deux sources -- la clé de jointure pour Census pointait donc sur la
+     mauvaise colonne selon le flux, et Rang_vs_tous_fournisseurs ne
+     trouvait jamais les bonnes valeurs pays. Corrigé : formules distinctes
+     par source.
+  3. top25_sh4_isq() ne filtrait pas par état (sommait le commerce du Québec
+     avec TOUS les partenaires) et utilisait DE au lieu de TE. Corrigé :
+     paramètre état ajouté, flux TE pour les exportations (comme demandé),
+     TI pour les importations.
 """
 
 import pandas as pd
@@ -38,6 +58,29 @@ def _agreger_sh6_vers_sh4(df: pd.DataFrame) -> pd.DataFrame:
     return df.groupby(colonnes_groupe, as_index=False, observed=True)["valeur"].sum()
 
 
+def _ajouter_province_et_partenaire_cimt(df: pd.DataFrame) -> pd.DataFrame:
+    """CIMT : état = côté B (partenaire). DE/TE -> partenaire=destination,
+    province=origine. TI -> partenaire=origine, province=destination."""
+    if df.empty:
+        return df
+    df = df.copy()
+    est_ti = df["flux"] == "TI"
+    df["province"] = df["destination"].where(est_ti, df["origine"])
+    df["partenaire"] = df["origine"].where(est_ti, df["destination"])
+    return df
+
+
+def _ajouter_partenaire_census(df: pd.DataFrame) -> pd.DataFrame:
+    """Census : état = côté A (domestique) -- CONVENTION INVERSE de CIMT.
+    DE/TE -> état=origine. TI -> état=destination."""
+    if df.empty:
+        return df
+    df = df.copy()
+    est_ti = df["flux"] == "TI"
+    df["partenaire"] = df["destination"].where(est_ti, df["origine"])
+    return df
+
+
 def extraire_provincial(annees: list[int], flux: list[str], etats_us: list[str],
                          codes_sh4: list[str]) -> pd.DataFrame:
     """Ventilation par province canadienne du commerce avec le(s) état(s)
@@ -46,7 +89,8 @@ def extraire_provincial(annees: list[int], flux: list[str], etats_us: list[str],
         sources=["CIMT"], annees=annees, flux=flux,
         partenaires_b=etats_us, hs6_prefixes=codes_sh4,
     )
-    return _agreger_sh6_vers_sh4(df)
+    df = _agreger_sh6_vers_sh4(df)
+    return _ajouter_province_et_partenaire_cimt(df)
 
 
 def substituer_isq(df_provincial: pd.DataFrame, annees: list[int], flux: list[str],
@@ -60,12 +104,11 @@ def substituer_isq(df_provincial: pd.DataFrame, annees: list[int], flux: list[st
         partenaires_b=etats_us, hs6_prefixes=codes_sh4,
     )
     df_isq = _agreger_sh6_vers_sh4(df_isq)
+    df_isq = _ajouter_province_et_partenaire_cimt(df_isq)
     if df_isq.empty:
         return df_provincial
 
-    df_sans_qc = df_provincial[
-        (df_provincial.get("origine") != "PQC") & (df_provincial.get("destination") != "PQC")
-    ]
+    df_sans_qc = df_provincial[df_provincial.get("province") != "PQC"]
     return pd.concat([df_sans_qc, df_isq], ignore_index=True)
 
 
@@ -82,34 +125,31 @@ def extraire_pays_pour_etat(annees: list[int], flux: list[str], etats_us: list[s
     if df.empty:
         return df
     # Filtre agnostique au sens du flux -- Canada peut apparaître en
-    # origine (TI) ou destination (DE/TE) selon la direction.
+    # origine (DE/TE) ou destination (TI) côté Census.
     df = df[(df.get("origine") != CODE_CANADA_CENSUS) & (df.get("destination") != CODE_CANADA_CENSUS)]
-    return _agreger_sh6_vers_sh4(df)
+    df = _agreger_sh6_vers_sh4(df)
+    return _ajouter_partenaire_census(df)
 
 
 def calculer_rangs(df_provincial: pd.DataFrame, df_pays: pd.DataFrame) -> pd.DataFrame:
     """Calcule les deux classements sur le détail provincial (déjà
-    substitué ISQ) :
-      - Rang_vs_provinces : au sein du groupe (partenaire état, hs6,
-        année, flux) -- classement parmi les provinces seulement.
-      - Rang_vs_tous_fournisseurs : même groupe, mais comparé à
-        provinces + pays étrangers combinés (df_pays).
-
-    Méthode 'min' (ex aequo partagent le même rang, pas de rang sauté) --
-    cohérent avec le script original (.rank(method='min')).
+    substitué ISQ), en suivant d'aussi près que possible la logique du
+    script original (_classer_census) :
+      - Rang_vs_provinces : .rank(method='min') au sein du groupe
+        (partenaire état, hs6, année, flux) -- vectorisé, identique à
+        l'original.
+      - Rang_vs_tous_fournisseurs : dictionnaire de correspondance
+        pré-calculé (clé -> liste des valeurs pays), comme pays_lookup
+        dans le script original, puis un passage ligne par ligne pour
+        combiner avec les autres provinces du même groupe -- même
+        structure que l'original, pas une réinvention.
     """
     if df_provincial.empty:
         return df_provincial
 
     df = df_provincial.copy()
-    cle_groupe = ["destination", "hs6", "annee", "flux"] if "destination" in df.columns else []
-    # Le partenaire (état) est côté B -- destination pour DE/TE, origine
-    # pour TI. On normalise ici sur une colonne 'partenaire' unique pour
-    # que le classement ne dépende pas du sens du flux.
-    est_ti = df["flux"] == "TI"
-    df["partenaire"] = df["destination"].where(~est_ti, df["origine"])
-
     cle_groupe = ["partenaire", "hs6", "annee", "flux"]
+
     df["Rang_vs_provinces"] = (
         df.groupby(cle_groupe, observed=True)["valeur"].rank(ascending=False, method="min").astype("Int64")
     )
@@ -120,27 +160,25 @@ def calculer_rangs(df_provincial: pd.DataFrame, df_pays: pd.DataFrame) -> pd.Dat
         df["Nb_fournisseurs_total"] = df["Nb_provinces"]
         return df
 
-    df_p = df_pays.copy()
-    est_ti_p = df_p["flux"] == "TI"
-    df_p["partenaire"] = df_p["destination"].where(~est_ti_p, df_p["origine"])
+    # Dictionnaire clé -> liste des valeurs pays, PRÉ-CALCULÉ une seule
+    # fois (comme pays_lookup dans _classer_census), pas refiltré à
+    # chaque ligne -- plus fidèle à l'original ET plus rapide.
+    pays_lookup: dict[tuple, list[float]] = {}
+    for cle, sous_df in df_pays.groupby(cle_groupe, observed=True):
+        pays_lookup[cle] = sous_df["valeur"].dropna().tolist()
 
-    # Pour chaque groupe (partenaire état, hs4, annee, flux), rassembler
-    # toutes les valeurs (provinces + pays) et calculer le rang de chaque
-    # province dedans -- pas de raccourci vectorisé simple ici puisqu'on
-    # compare CHAQUE ligne provinciale à un pool combiné variable par groupe.
+    # Dictionnaire des valeurs des AUTRES provinces par groupe, même
+    # principe -- évite de refiltrer df à chaque itération.
+    provinces_par_groupe: dict[tuple, list[tuple]] = {}
+    for cle, sous_df in df.groupby(cle_groupe, observed=True):
+        provinces_par_groupe[cle] = list(zip(sous_df.index, sous_df["valeur"]))
+
     rangs, nb_total = [], []
-    for _, ligne in df.iterrows():
+    for idx, ligne in df.iterrows():
         cle = (ligne["partenaire"], ligne["hs6"], ligne["annee"], ligne["flux"])
-        autres_provinces = df[
-            (df["partenaire"] == cle[0]) & (df["hs6"] == cle[1]) &
-            (df["annee"] == cle[2]) & (df["flux"] == cle[3]) &
-            (df.index != ligne.name)
-        ]["valeur"].tolist()
-        valeurs_pays = df_p[
-            (df_p["partenaire"] == cle[0]) & (df_p["hs6"] == cle[1]) &
-            (df_p["annee"] == cle[2]) & (df_p["flux"] == cle[3])
-        ]["valeur"].tolist()
-        pool = autres_provinces + valeurs_pays
+        vals_pays = pays_lookup.get(cle, [])
+        vals_autres_prov = [v for i, v in provinces_par_groupe.get(cle, []) if i != idx]
+        pool = vals_pays + vals_autres_prov
         rangs.append(sum(1 for v in pool if v > ligne["valeur"]) + 1)
         nb_total.append(len(pool) + 1)
 
@@ -149,15 +187,20 @@ def calculer_rangs(df_provincial: pd.DataFrame, df_pays: pd.DataFrame) -> pd.Dat
     return df
 
 
-def top25_sh4_isq(annees: list[int], flux: str) -> list[str]:
-    """Détermine les 25 codes SH4 les plus importants pour le Québec,
+def top25_sh4_isq(annees: list[int], etat: str) -> list[str]:
+    """Détermine les 25 codes SH4 les plus importants pour le commerce du
+    Québec AVEC L'ÉTAT VISÉ précisément (pas tous les partenaires
+    confondus), en TE (exportations totales) et en TI (importations),
     depuis isq_annuel.parquet -- remplace le scrape ISQ dédié
-    (searchType=Top25_4) du script original par une simple agrégation
-    locale, cohérent avec le principe déjà établi partout ailleurs dans
-    ce projet (maximiser l'usage des parquets, minimiser le direct)."""
-    df = d.extraire(sources=["ISQ"], annees=annees, flux=[flux])
-    if df.empty:
-        return []
-    df = _agreger_sh6_vers_sh4(df)
-    totaux = df.groupby("hs6", observed=True)["valeur"].sum().sort_values(ascending=False)
-    return totaux.head(25).index.tolist()
+    (searchType=Top25_4) du script original par une agrégation locale,
+    cohérent avec le principe déjà établi partout ailleurs dans ce projet
+    (maximiser l'usage des parquets, minimiser le direct)."""
+    codes_retenus = set()
+    for flux in ("TE", "TI"):
+        df = d.extraire(sources=["ISQ"], annees=annees, flux=[flux], partenaires_b=[etat])
+        if df.empty:
+            continue
+        df = _agreger_sh6_vers_sh4(df)
+        totaux = df.groupby("hs6", observed=True)["valeur"].sum().sort_values(ascending=False)
+        codes_retenus.update(totaux.head(25).index.tolist())
+    return sorted(codes_retenus)
