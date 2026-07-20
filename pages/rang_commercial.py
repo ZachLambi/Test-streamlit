@@ -224,7 +224,10 @@ else:
             lambda e: "Québec" if e == "Québec" else "Autre"
         )
 
-        import plotly.express as px
+        import plotly.express as px  # nécessite "plotly" dans requirements.txt --
+        # standardisé sur Plotly plutôt qu'Altair (meilleur polish visuel,
+        # cohérent avec l'autre dashboard du projet qui l'utilise déjà)
+
         fig = px.bar(
             df_graphique, x="valeur", y="Entité", orientation="h",
             color="Couleur", color_discrete_map={"Québec": "#1f77b4", "Autre": "#d3d3d3"},
