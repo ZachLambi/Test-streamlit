@@ -5,17 +5,15 @@ Intégration réelle d'analyse_rang_commerce_v3.py, PORTÉE : Québec / État(s)
 américain(s) seulement. Pays/Pays et Province/Pays viendront une fois
 Comtrade réconcilié (voir resume_reconciliation_comtrade.txt).
 
-UI (20 juillet 2026, refonte après retour utilisateur -- "juste un classeur"
-n'était pas assez lisible) :
-  - Sélecteur (produit × état × année × flux) pour choisir QUEL point
-    précis visualiser en détail, plutôt que de tout empiler dans un seul
-    tableau géant.
-  - Cartes de métriques (rang provincial, rang mondial) pour le point
-    sélectionné.
-  - Graphique à barres du classement complet (provinces + pays), Québec
-    mis en évidence par une couleur distincte.
-  - Tableau détaillé complet toujours disponible, mais replié par défaut
-    (st.expander) -- pour l'export, pas la lecture au premier coup d'œil.
+UI v3 (20 juillet 2026, 2e refonte après retour utilisateur) :
+  - Reprend la structure de exporter_excel_formate() du script original
+    (section RÉSUMÉ + section Détail par produit avec médailles OR/ARGENT/
+    BRONZE) plutôt qu'un classeur de données brutes.
+  - st.tabs() DANS LA PAGE (pas la barre latérale) pour séparer Résumé /
+    Détail par produit / Tendance / Données complètes.
+  - Le graphique à barres a été retiré (jugé peu adapté pour communiquer
+    un CLASSEMENT) -- remplacé par un graphique de TENDANCE du rang dans
+    le temps (pertinent seulement si plusieurs années sont sélectionnées).
 """
 
 import streamlit as st
@@ -24,7 +22,7 @@ import pandas as pd
 import donnees as d
 from rang_commercial_logique import (
     extraire_provincial, substituer_isq, extraire_pays_pour_etat,
-    calculer_rangs, top25_sh4_isq,
+    calculer_rangs, construire_detail_produit, resume_stats, top25_sh4_isq,
 )
 from export import exporter_excel, exporter_csv
 
@@ -151,98 +149,112 @@ if lancer:
 
             if devise_rc != "Native (par source)" and not df_resultat.empty:
                 df_resultat = d.convertir_devise(df_resultat, devise_rc)
+                if not df_pays.empty:
+                    df_pays = d.convertir_devise(df_pays, devise_rc)
+
+            st.write("Construction du détail par produit...")
+            df_detail = construire_detail_produit(df_resultat, df_pays, noms_geo)
 
             statut.update(label="Extraction terminée", state="complete")
 
         st.session_state[cle_session] = df_resultat
-        st.session_state["rc_df_pays"] = df_pays
+        st.session_state["rc_df_detail"] = df_detail
 
 df_affiche = st.session_state.get(cle_session, pd.DataFrame())
-df_pays_affiche = st.session_state.get("rc_df_pays", pd.DataFrame())
+df_detail = st.session_state.get("rc_df_detail", pd.DataFrame())
 
 if df_affiche.empty:
     st.info("Configure tes filtres dans la barre latérale, puis clique **Extraire**.")
 else:
     noms_geo = d.referentiel_geo()
-    df_lisible = df_affiche.copy()
-    df_lisible["Province"] = df_lisible["province"].map(lambda c: noms_geo.get(c, c))
-    df_lisible["Partenaire"] = df_lisible["partenaire"].map(lambda c: noms_geo.get(c, c))
+    unite = devise_rc if devise_rc != "Native (par source)" else ""
 
-    # ── Sélecteur du point précis à visualiser en détail ─────────────────
-    df_qc = df_lisible[df_lisible["province"] == "PQC"]
-    if df_qc.empty:
-        st.warning("Aucune ligne Québec dans ce résultat — impossible d'afficher le détail visuel, "
-                   "mais le tableau complet reste disponible plus bas.")
-    else:
-        st.subheader("Détail d'un point précis")
-        combos = (df_qc[["Partenaire", "hs6", "annee", "flux"]]
-                  .drop_duplicates().sort_values(["Partenaire", "hs6", "annee", "flux"]))
-        libelles_combos = [
-            f"{r.Partenaire} · SH4 {r.hs6} · {r.annee} · {r.flux}" for r in combos.itertuples()
-        ]
-        choix_combo = st.selectbox("Point à visualiser", options=libelles_combos, key="rc_combo_detail")
-        idx_combo = libelles_combos.index(choix_combo)
-        partenaire_sel, hs4_sel, annee_sel, flux_sel = combos.iloc[idx_combo][
-            ["Partenaire", "hs6", "annee", "flux"]
-        ]
+    onglet_resume, onglet_detail, onglet_tendance, onglet_donnees = st.tabs(
+        ["📋 Résumé", "🔍 Détail par produit", "📈 Tendance", "📄 Données complètes"]
+    )
 
-        ligne_qc = df_qc[
-            (df_qc["Partenaire"] == partenaire_sel) & (df_qc["hs6"] == hs4_sel) &
-            (df_qc["annee"] == annee_sel) & (df_qc["flux"] == flux_sel)
-        ].iloc[0]
-        code_partenaire_sel = ligne_qc["partenaire"]  # code brut, pas le libellé -- pour filtrer les données
+    # ── ONGLET RÉSUMÉ ──────────────────────────────────────────────────────
+    with onglet_resume:
+        stats = resume_stats(df_detail)
+        st.subheader(f"{stats['nb_produits']} produit(s) analysé(s)")
 
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Rang provincial", f"{int(ligne_qc['Rang_vs_provinces'])} / {int(ligne_qc['Nb_provinces'])}")
-        col2.metric("Rang mondial (provinces + pays)",
-                    f"{int(ligne_qc['Rang_vs_tous_fournisseurs'])} / {int(ligne_qc['Nb_fournisseurs_total'])}")
-        col3.metric("Valeur Québec", f"{ligne_qc['valeur']:,.0f} {devise_rc if devise_rc != 'Native (par source)' else ''}")
-        col4.metric("Concurrents", f"{int(ligne_qc['Nb_fournisseurs_total']) - 1}")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("💰 Total flux Québec", f"{stats['total_flux']:,.0f} {unite}")
+        c2.metric("📊 Rang moyen", stats["rang_moyen"] if stats["rang_moyen"] is not None else "N/D")
+        c3.metric("🥇 Rang #1", f"{stats['rang1']} / {stats['nb_total']}")
 
-        # ── Graphique à barres : classement complet, Québec en évidence ──
-        masque_groupe = (
-            (df_lisible["partenaire"] == code_partenaire_sel) & (df_lisible["hs6"] == hs4_sel) &
-            (df_lisible["annee"] == annee_sel) & (df_lisible["flux"] == flux_sel)
-        )
-        provinces_groupe = df_lisible[masque_groupe][["Province", "valeur"]].rename(columns={"Province": "Entité"})
+        c4, c5, c6 = st.columns(3)
+        c4.metric("🥈 Rang ≤ 2", f"{stats['rang2']} / {stats['nb_total']}")
+        c5.metric("🎯 Rang ≤ 5", f"{stats['rang5']} / {stats['nb_total']}")
+        c6.metric("🏅 Rang ≤ 10", f"{stats['rang10']} / {stats['nb_total']}")
 
-        pays_groupe = pd.DataFrame()
-        if not df_pays_affiche.empty:
-            masque_pays = (
-                (df_pays_affiche["partenaire"] == code_partenaire_sel) & (df_pays_affiche["hs6"] == hs4_sel) &
-                (df_pays_affiche["annee"] == annee_sel) & (df_pays_affiche["flux"] == flux_sel)
+    # ── ONGLET DÉTAIL PAR PRODUIT (médailles) ───────────────────────────────
+    with onglet_detail:
+        if df_detail.empty:
+            st.info("Aucun résultat à détailler.")
+        else:
+            df_aff = df_detail.copy()
+            df_aff["Partenaire"] = df_aff["partenaire"].map(lambda c: noms_geo.get(c, c))
+            df_aff = df_aff.sort_values("rang_qc")
+
+            def _medaille(rang: int) -> str:
+                return {1: "🥇", 2: "🥈", 3: "🥉"}.get(rang, "")
+
+            df_aff.insert(0, "", df_aff["rang_qc"].map(_medaille))
+            df_aff = df_aff.rename(columns={
+                "hs6": "Code SH4", "annee": "Année", "flux": "Flux",
+                "rang_qc": "Rang Québec", "nb_total": "Nb fournisseurs",
+                "valeur_qc": f"Flux Québec ({unite})",
+                "top_nom": "1er fournisseur/client", "top_valeur": f"Valeur #1 ({unite})",
+            })
+            colonnes = ["", "Code SH4", "Partenaire", "Année", "Flux", "Rang Québec",
+                        "Nb fournisseurs", f"Flux Québec ({unite})",
+                        "1er fournisseur/client", f"Valeur #1 ({unite})"]
+
+            st.dataframe(
+                df_aff[colonnes], width='stretch', height=420, hide_index=True,
+                column_config={
+                    f"Flux Québec ({unite})": st.column_config.NumberColumn(format="%,.0f"),
+                    f"Valeur #1 ({unite})": st.column_config.NumberColumn(format="%,.0f"),
+                },
             )
-            df_pays_sel = df_pays_affiche[masque_pays].copy()
-            if not df_pays_sel.empty:
-                colonne_pays = "origine" if flux_sel == "DE" else "destination"
-                df_pays_sel["Entité"] = df_pays_sel[colonne_pays].map(lambda c: noms_geo.get(c, c))
-                pays_groupe = df_pays_sel[["Entité", "valeur"]]
 
-        df_graphique = pd.concat([provinces_groupe, pays_groupe], ignore_index=True)
-        df_graphique = df_graphique.sort_values("valeur", ascending=True).tail(15)  # top 15 pour rester lisible
-        df_graphique["Couleur"] = df_graphique["Entité"].apply(
-            lambda e: "Québec" if e == "Québec" else "Autre"
-        )
+    # ── ONGLET TENDANCE ───────────────────────────────────────────────────
+    with onglet_tendance:
+        if len(annees_selectionnees) <= 1:
+            st.info("Sélectionne une plage de plusieurs années dans la barre latérale "
+                    "pour voir l'évolution du rang dans le temps.")
+        elif df_detail.empty:
+            st.info("Aucun résultat à afficher.")
+        else:
+            import plotly.express as px
 
-        import plotly.express as px  # nécessite "plotly" dans requirements.txt --
-        # standardisé sur Plotly plutôt qu'Altair (meilleur polish visuel,
-        # cohérent avec l'autre dashboard du projet qui l'utilise déjà)
+            df_tendance = df_detail.copy()
+            df_tendance["Partenaire"] = df_tendance["partenaire"].map(lambda c: noms_geo.get(c, c))
+            df_tendance["Série"] = (
+                df_tendance["Partenaire"] + " · SH4 " + df_tendance["hs6"] + " · " + df_tendance["flux"]
+            )
+            fig = px.line(
+                df_tendance.sort_values("annee"), x="annee", y="rang_qc", color="Série",
+                markers=True,
+                labels={"annee": "Année", "rang_qc": "Rang du Québec (1 = meilleur)"},
+                title="Évolution du rang du Québec dans le temps",
+            )
+            fig.update_yaxes(autorange="reversed")  # rang 1 en haut, plus intuitif
+            st.plotly_chart(fig, width='stretch')
 
-        fig = px.bar(
-            df_graphique, x="valeur", y="Entité", orientation="h",
-            color="Couleur", color_discrete_map={"Québec": "#1f77b4", "Autre": "#d3d3d3"},
-            labels={"valeur": f"Valeur ({devise_rc})", "Entité": ""},
-            title=f"Classement — {partenaire_sel}, SH4 {hs4_sel}, {annee_sel}, {flux_sel} (top 15 affichés)",
-        )
-        fig.update_layout(showlegend=False, height=450)
-        st.plotly_chart(fig, width='stretch')
-
-    # ── Tableau complet, replié par défaut ────────────────────────────────
-    with st.expander(f"Tableau détaillé complet — {len(df_lisible):,} ligne(s)"):
+    # ── ONGLET DONNÉES COMPLÈTES ───────────────────────────────────────────
+    with onglet_donnees:
+        df_lisible = df_affiche.copy()
+        df_lisible["Province"] = df_lisible["province"].map(lambda c: noms_geo.get(c, c))
+        df_lisible["Partenaire"] = df_lisible["partenaire"].map(lambda c: noms_geo.get(c, c))
         colonnes_affichage = ["annee", "flux", "Province", "Partenaire", "hs6", "valeur",
                                "Rang_vs_provinces", "Nb_provinces",
                                "Rang_vs_tous_fournisseurs", "Nb_fournisseurs_total"]
         colonnes_affichage = [c for c in colonnes_affichage if c in df_lisible.columns]
+
+        st.caption(f"{len(df_lisible):,} ligne(s) — inclut chaque province individuellement, "
+                   "pas seulement le Québec (pour audit/export).")
         st.dataframe(df_lisible[colonnes_affichage], width='stretch', height=420)
 
         col1, col2, _ = st.columns([1, 1, 2])
