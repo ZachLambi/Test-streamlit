@@ -22,7 +22,8 @@ import pandas as pd
 import donnees as d
 from rang_commercial_logique import (
     extraire_provincial, substituer_isq, extraire_pays_pour_etat,
-    calculer_rangs, construire_detail_produit, resume_stats, top25_sh4_isq,
+    calculer_rangs, construire_detail_produit, construire_top10_produit,
+    resume_stats, top25_sh4_isq,
 )
 from export import exporter_excel, exporter_csv
 
@@ -56,14 +57,16 @@ st.markdown(
 
 
 def _afficher_bloc_flux(flux_val: str, prefixe: str, df_affiche: pd.DataFrame,
-                         df_detail: pd.DataFrame, unite: str,
+                         df_detail: pd.DataFrame, df_top10: pd.DataFrame, unite: str,
                          annees_selectionnees: list[int], noms_geo: dict,
                          devise_resultat: str) -> None:
     """Affiche les 4 sous-onglets (Résumé/Détail/Tendance/Données) pour UN
     SEUL sens de flux (DE=Fournisseur ou TI=Client) -- appelée une fois par
-    onglet de haut niveau, sur les mêmes df_affiche/df_detail filtrés."""
+    onglet de haut niveau, sur les mêmes df_affiche/df_detail/df_top10
+    filtrés."""
     df_flux = df_affiche[df_affiche["flux"] == flux_val] if not df_affiche.empty else df_affiche
     df_detail_flux = df_detail[df_detail["flux"] == flux_val] if not df_detail.empty else df_detail
+    df_top10_flux = df_top10[df_top10["flux"] == flux_val] if not df_top10.empty else df_top10
 
     if df_flux.empty:
         st.info("Aucun résultat pour ce sens de flux — vérifie qu'il est coché "
@@ -73,6 +76,28 @@ def _afficher_bloc_flux(flux_val: str, prefixe: str, df_affiche: pd.DataFrame,
     onglet_resume, onglet_detail, onglet_tendance, onglet_donnees = st.tabs(
         ["📋 Résumé", "🔍 Détail par produit", "📈 Tendance", "📄 Données complètes"]
     )
+
+    def _tableau_medailles() -> tuple[pd.DataFrame, list[str]]:
+        """1 ligne par produit avec médaille -- construit une fois, utilisé
+        dans l'onglet Résumé."""
+        df_aff = df_detail_flux.copy()
+        df_aff["Partenaire"] = df_aff["partenaire"].map(lambda c: noms_geo.get(c, c))
+        df_aff = df_aff.sort_values("rang_qc")
+
+        def _medaille(rang: int) -> str:
+            return {1: "🥇", 2: "🥈", 3: "🥉"}.get(rang, "")
+
+        df_aff.insert(0, "", df_aff["rang_qc"].map(_medaille))
+        df_aff = df_aff.rename(columns={
+            "hs6": "Code SH4", "annee": "Année",
+            "rang_qc": "Rang Québec", "nb_total": "Nb fournisseurs",
+            "valeur_qc": f"Flux Québec ({unite})",
+            "top_nom": "1er fournisseur/client", "top_valeur": f"Valeur #1 ({unite})",
+        })
+        colonnes = ["", "Code SH4", "Partenaire", "Année", "Rang Québec",
+                    "Nb fournisseurs", f"Flux Québec ({unite})",
+                    "1er fournisseur/client", f"Valeur #1 ({unite})"]
+        return df_aff, colonnes
 
     # ── ONGLET RÉSUMÉ ──────────────────────────────────────────────────────
     with onglet_resume:
@@ -89,38 +114,62 @@ def _afficher_bloc_flux(flux_val: str, prefixe: str, df_affiche: pd.DataFrame,
             c2.metric("🎯 Rang ≤ 3", f"{stats['rang3']} / {stats['nb_total']}")
             c3.metric("📊 Rang moyen", stats["rang_moyen"] if stats["rang_moyen"] is not None else "N/D")
 
-    # ── ONGLET DÉTAIL PAR PRODUIT (médailles) ───────────────────────────────
+        # Tableau détail (médailles) -- déplacé ici, sous le container de
+        # stats, dans son propre container.
+        with st.container(key=f"rc_tableau_detail_{prefixe}", border=True):
+            if df_detail_flux.empty:
+                st.info("Aucun résultat à détailler.")
+            else:
+                df_aff, colonnes = _tableau_medailles()
+                st.dataframe(
+                    df_aff[colonnes], width='stretch', height=420, hide_index=True,
+                    column_config={
+                        f"Flux Québec ({unite})": st.column_config.NumberColumn(format="%,.0f"),
+                        f"Valeur #1 ({unite})": st.column_config.NumberColumn(format="%,.0f"),
+                    },
+                )
+
+    # ── ONGLET DÉTAIL PAR PRODUIT (top 10 empilés, un container par SH4) ────
     with onglet_detail:
-        if df_detail_flux.empty:
+        if df_top10_flux.empty:
             st.info("Aucun résultat à détailler.")
         else:
-            df_aff = df_detail_flux.copy()
-            df_aff["Partenaire"] = df_aff["partenaire"].map(lambda c: noms_geo.get(c, c))
-            df_aff = df_aff.sort_values("rang_qc")
+            groupes = df_top10_flux[["partenaire", "hs6", "annee"]].drop_duplicates()
+            plusieurs_partenaires = groupes["partenaire"].nunique() > 1
+            plusieurs_annees = groupes["annee"].nunique() > 1
+            # Ordre croissant de code SH4 (ex : 1201, 1345, 3452...).
+            groupes = groupes.sort_values(["hs6", "annee", "partenaire"])
 
-            def _medaille(rang: int) -> str:
-                return {1: "🥇", 2: "🥈", 3: "🥉"}.get(rang, "")
+            st.caption(f"{len(groupes)} produit(s) — top {min(10, int(df_top10_flux['rang'].max()))} "
+                       "fournisseurs/clients par produit, Québec 🍁 mis en évidence.")
 
-            df_aff.insert(0, "", df_aff["rang_qc"].map(_medaille))
-            df_aff = df_aff.rename(columns={
-                "hs6": "Code SH4", "annee": "Année",
-                "rang_qc": "Rang Québec", "nb_total": "Nb fournisseurs",
-                "valeur_qc": f"Flux Québec ({unite})",
-                "top_nom": "1er fournisseur/client", "top_valeur": f"Valeur #1 ({unite})",
-            })
-            # Flux retiré des colonnes -- redondant, tout l'onglet est déjà
-            # un seul sens de flux (Fournisseur ou Client).
-            colonnes = ["", "Code SH4", "Partenaire", "Année", "Rang Québec",
-                        "Nb fournisseurs", f"Flux Québec ({unite})",
-                        "1er fournisseur/client", f"Valeur #1 ({unite})"]
+            for _, g in groupes.iterrows():
+                sous = df_top10_flux[
+                    (df_top10_flux["partenaire"] == g["partenaire"]) &
+                    (df_top10_flux["hs6"] == g["hs6"]) &
+                    (df_top10_flux["annee"] == g["annee"])
+                ].sort_values("rang")
 
-            st.dataframe(
-                df_aff[colonnes], width='stretch', height=420, hide_index=True,
-                column_config={
-                    f"Flux Québec ({unite})": st.column_config.NumberColumn(format="%,.0f"),
-                    f"Valeur #1 ({unite})": st.column_config.NumberColumn(format="%,.0f"),
-                },
-            )
+                titre = [f"SH4 {g['hs6']}"]
+                if plusieurs_partenaires:
+                    titre.append(noms_geo.get(g["partenaire"], g["partenaire"]))
+                if plusieurs_annees:
+                    titre.append(str(g["annee"]))
+
+                cle_container = f"rc_top10_{prefixe}_{g['hs6']}_{g['partenaire']}_{g['annee']}"
+                with st.container(key=cle_container, border=True):
+                    st.markdown(f"**{' · '.join(titre)}**")
+                    df_aff = sous.copy()
+                    df_aff[""] = df_aff["rang"].map(lambda r: {1: "🥇", 2: "🥈", 3: "🥉"}.get(r, ""))
+                    df_aff["Fournisseur / Client"] = df_aff.apply(
+                        lambda r: f"🍁 {r['nom']}" if r["est_qc"] else r["nom"], axis=1
+                    )
+                    df_aff = df_aff.rename(columns={"rang": "Rang", "valeur": f"Valeur ({unite})"})
+                    st.dataframe(
+                        df_aff[["", "Rang", "Fournisseur / Client", f"Valeur ({unite})"]],
+                        width='stretch', hide_index=True,
+                        column_config={f"Valeur ({unite})": st.column_config.NumberColumn(format="%,.0f")},
+                    )
 
     # ── ONGLET TENDANCE ───────────────────────────────────────────────────
     with onglet_tendance:
@@ -318,11 +367,13 @@ if lancer:
 
             st.write("Construction du détail par produit...")
             df_detail = construire_detail_produit(df_resultat, df_pays, noms_geo)
+            df_top10 = construire_top10_produit(df_resultat, df_pays, noms_geo)
 
             statut.update(label="Extraction terminée", state="complete")
 
         st.session_state[cle_session] = df_resultat
         st.session_state["rc_df_detail"] = df_detail
+        st.session_state["rc_df_top10"] = df_top10
         # Gèle la devise utilisée POUR CETTE EXTRACTION -- ne doit plus
         # bouger tant qu'une nouvelle extraction n'est pas lancée, même si
         # le widget "rc_devise" change entre-temps (voir usage de
@@ -331,6 +382,7 @@ if lancer:
 
 df_affiche = st.session_state.get(cle_session, pd.DataFrame())
 df_detail = st.session_state.get("rc_df_detail", pd.DataFrame())
+df_top10 = st.session_state.get("rc_df_top10", pd.DataFrame())
 devise_resultat = st.session_state.get("rc_devise_resultat", "Native (par source)")
 
 if df_affiche.empty:
@@ -345,8 +397,8 @@ else:
     ])
 
     with onglet_fournisseur:
-        _afficher_bloc_flux("DE", "de", df_affiche, df_detail, unite,
+        _afficher_bloc_flux("DE", "de", df_affiche, df_detail, df_top10, unite,
                              annees_selectionnees, noms_geo, devise_resultat)
     with onglet_client:
-        _afficher_bloc_flux("TI", "ti", df_affiche, df_detail, unite,
+        _afficher_bloc_flux("TI", "ti", df_affiche, df_detail, df_top10, unite,
                              annees_selectionnees, noms_geo, devise_resultat)

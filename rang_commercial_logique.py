@@ -214,26 +214,19 @@ def calculer_rangs(df_provincial: pd.DataFrame, df_pays: pd.DataFrame) -> pd.Dat
     return df
 
 
-def construire_detail_produit(df_provincial: pd.DataFrame, df_pays: pd.DataFrame,
-                               noms_geo: dict) -> pd.DataFrame:
-    """Une ligne par (partenaire, hs6, année, flux) -- le rang du Québec,
-    sa valeur, ET qui est le grand premier (nom + valeur), peu importe
-    si c'est une autre province ou un pays étranger. Reproduit la section
-    "Détail par produit" de exporter_excel_formate() du script original
-    (colonnes Rang, Nb fournisseurs, Flux QC, 1er fournisseur, Valeur #1)."""
-    if df_provincial.empty:
-        return pd.DataFrame()
-
-    df_qc = df_provincial[df_provincial["province"] == "PQC"].copy()
-    if df_qc.empty:
-        return pd.DataFrame()
-
+def _candidats_par_groupe(df_qc: pd.DataFrame, df_provincial: pd.DataFrame,
+                           df_pays: pd.DataFrame, noms_geo: dict):
+    """Générateur interne PARTAGÉ par construire_detail_produit() et
+    construire_top10_produit(), pour ne jamais faire diverger la logique de
+    fusion provinces+pays entre les deux. Pour chaque ligne Québec (un
+    groupe partenaire/hs6/année/flux), produit (cle, ligne_qc, candidats)
+    où candidats est la liste COMPLÈTE (Québec + provinces + pays) triée
+    par valeur décroissante -- (nom, valeur, est_qc)."""
     cle_groupe = ["partenaire", "hs6", "annee", "flux"]
-    lignes = []
     for _, ligne_qc in df_qc.iterrows():
         cle = tuple(ligne_qc[c] for c in cle_groupe)
 
-        candidats = [("Québec", ligne_qc["valeur"])]
+        candidats = [("Québec", ligne_qc["valeur"], True)]
 
         autres = df_provincial[
             (df_provincial["partenaire"] == cle[0]) & (df_provincial["hs6"] == cle[1]) &
@@ -241,7 +234,7 @@ def construire_detail_produit(df_provincial: pd.DataFrame, df_pays: pd.DataFrame
             (df_provincial["province"] != "PQC")
         ]
         for _, r in autres.iterrows():
-            candidats.append((noms_geo.get(r["province"], r["province"]), r["valeur"]))
+            candidats.append((noms_geo.get(r["province"], r["province"]), r["valeur"], False))
 
         if df_pays is not None and not df_pays.empty:
             pays_grp = df_pays[
@@ -258,10 +251,29 @@ def construire_detail_produit(df_provincial: pd.DataFrame, df_pays: pd.DataFrame
             # de nom DE~TE.
             colonne_pays = "origine" if cle[3] == "DE" else "destination"
             for _, r in pays_grp.iterrows():
-                candidats.append((noms_geo.get(r[colonne_pays], r[colonne_pays]), r["valeur"]))
+                candidats.append((noms_geo.get(r[colonne_pays], r[colonne_pays]), r["valeur"], False))
 
-        top_nom, top_valeur = max(candidats, key=lambda c: c[1])
+        candidats.sort(key=lambda c: c[1], reverse=True)
+        yield cle, ligne_qc, candidats
 
+
+def construire_detail_produit(df_provincial: pd.DataFrame, df_pays: pd.DataFrame,
+                               noms_geo: dict) -> pd.DataFrame:
+    """Une ligne par (partenaire, hs6, année, flux) -- le rang du Québec,
+    sa valeur, ET qui est le grand premier (nom + valeur), peu importe
+    si c'est une autre province ou un pays étranger. Reproduit la section
+    "Détail par produit" de exporter_excel_formate() du script original
+    (colonnes Rang, Nb fournisseurs, Flux QC, 1er fournisseur, Valeur #1)."""
+    if df_provincial.empty:
+        return pd.DataFrame()
+
+    df_qc = df_provincial[df_provincial["province"] == "PQC"].copy()
+    if df_qc.empty:
+        return pd.DataFrame()
+
+    lignes = []
+    for cle, ligne_qc, candidats in _candidats_par_groupe(df_qc, df_provincial, df_pays, noms_geo):
+        top_nom, top_valeur, _ = candidats[0]
         lignes.append({
             "partenaire": cle[0], "hs6": cle[1], "annee": cle[2], "flux": cle[3],
             "rang_qc": int(ligne_qc["Rang_vs_tous_fournisseurs"]),
@@ -269,6 +281,31 @@ def construire_detail_produit(df_provincial: pd.DataFrame, df_pays: pd.DataFrame
             "valeur_qc": ligne_qc["valeur"],
             "top_nom": top_nom, "top_valeur": top_valeur,
         })
+
+    return pd.DataFrame(lignes)
+
+
+def construire_top10_produit(df_provincial: pd.DataFrame, df_pays: pd.DataFrame,
+                              noms_geo: dict, top_n: int = 10) -> pd.DataFrame:
+    """Une ligne par (partenaire, hs6, année, flux, rang) -- le TOP N complet
+    des fournisseurs/clients pour chaque produit (pas seulement le #1 comme
+    construire_detail_produit()). 'est_qc' marque la ligne Québec pour la
+    mise en évidence dans l'UI, sans dépendre d'une comparaison de nom
+    (fiable même si un partenaire s'appelait aussi 'Québec')."""
+    if df_provincial.empty:
+        return pd.DataFrame()
+
+    df_qc = df_provincial[df_provincial["province"] == "PQC"].copy()
+    if df_qc.empty:
+        return pd.DataFrame()
+
+    lignes = []
+    for cle, _ligne_qc, candidats in _candidats_par_groupe(df_qc, df_provincial, df_pays, noms_geo):
+        for rang, (nom, valeur, est_qc) in enumerate(candidats[:top_n], start=1):
+            lignes.append({
+                "partenaire": cle[0], "hs6": cle[1], "annee": cle[2], "flux": cle[3],
+                "rang": rang, "nom": nom, "valeur": valeur, "est_qc": est_qc,
+            })
 
     return pd.DataFrame(lignes)
 
