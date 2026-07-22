@@ -333,20 +333,36 @@ def resume_stats(df_detail_produit: pd.DataFrame) -> dict:
     }
 
 
-def top25_sh4_isq(annees: list[int], etat: str) -> list[str]:
-    """Détermine les 25 codes SH4 les plus importants pour le commerce du
-    Québec AVEC L'ÉTAT VISÉ précisément (pas tous les partenaires
-    confondus), en TE (exportations totales) et en TI (importations),
-    depuis isq_annuel.parquet -- remplace le scrape ISQ dédié
-    (searchType=Top25_4) du script original par une agrégation locale,
-    cohérent avec le principe déjà établi partout ailleurs dans ce projet
-    (maximiser l'usage des parquets, minimiser le direct)."""
-    codes_retenus = set()
-    for flux in ("TE", "TI"):
+def top25_sh4_isq(annees: list[int], etat: str) -> dict[str, list[str]]:
+    """Détermine, SÉPARÉMENT, les 25 codes SH4 les plus importants pour le
+    commerce du Québec avec l'état visé -- un top 25 PAR SENS DE FLUX, pas
+    un seul ensemble fusionné.
+
+    CORRECTIF (22 juillet 2026) -- une v1 fusionnait les deux top25 (TE et
+    TI) en un seul set() avant de les retourner, ce qui faisait perdre
+    l'info "sélectionné pour quel sens". En aval, l'extraction utilisait
+    ce set fusionné (jusqu'à 50 codes) pour LES DEUX flux à la fois --
+    l'onglet Fournisseur (DE) se retrouvait à analyser tous les codes du
+    set fusionné qui avaient du commerce en DE (ex. 44), pas seulement les
+    25 retenus via le classement Fournisseur. Corrigé : deux listes
+    distinctes, chacune alimentant EXCLUSIVEMENT son propre sens de flux
+    en aval (voir pages/rang_commercial.py).
+
+    Le côté Fournisseur sélectionne maintenant sur 'DE' (pas 'TE') --
+    cohérent avec le fait que l'analyse elle-même (Rang_vs_provinces /
+    Rang_vs_tous_fournisseurs) utilise déjà DE pour ce sens (voir
+    extraire_pays_pour_etat) : sélectionner sur TE risquerait de retenir un
+    code dominé par des réexportations, presque inexistant une fois qu'on
+    bascule sur la vraie base d'analyse (DE).
+
+    Retourne {"DE": [...≤25 codes...], "TI": [...≤25 codes...]}."""
+    resultat: dict[str, list[str]] = {}
+    for flux in ("DE", "TI"):
         df = d.extraire(sources=["ISQ"], annees=annees, flux=[flux], partenaires_b=[etat])
         if df.empty:
+            resultat[flux] = []
             continue
         df = _agreger_sh6_vers_sh4(df)
         totaux = df.groupby("hs6", observed=True)["valeur"].sum().sort_values(ascending=False)
-        codes_retenus.update(totaux.head(25).index.tolist())
-    return sorted(codes_retenus)
+        resultat[flux] = sorted(totaux.head(25).index.tolist())
+    return resultat

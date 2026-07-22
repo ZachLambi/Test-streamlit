@@ -426,23 +426,53 @@ if lancer:
         with st.status("Extraction en cours...", expanded=True) as statut:
             if mode == "Preset Top25":
                 st.write(f"Détermination des 25 codes SH4 les plus importants pour "
-                         f"{noms_geo.get(etats_selectionnes[0], etats_selectionnes[0])} (ISQ, TE+TI)...")
-                codes_sh4_selectionnes = top25_sh4_isq(annees_selectionnees, etats_selectionnes[0])
-                st.write(f"{len(codes_sh4_selectionnes)} codes retenus : {', '.join(codes_sh4_selectionnes)}")
+                         f"{noms_geo.get(etats_selectionnes[0], etats_selectionnes[0])} "
+                         f"(ISQ, séparément Fournisseur/DE et Client/TI)...")
+                codes_par_flux = top25_sh4_isq(annees_selectionnees, etats_selectionnes[0])
+                st.write(f"Fournisseur (DE) : {len(codes_par_flux['DE'])} codes retenus : "
+                         f"{', '.join(codes_par_flux['DE']) or '—'}")
+                st.write(f"Client (TI) : {len(codes_par_flux['TI'])} codes retenus : "
+                         f"{', '.join(codes_par_flux['TI']) or '—'}")
 
-            st.write("Ventilation provinciale (CIMT)...")
-            df_provincial = extraire_provincial(
-                annees_selectionnees, flux_cochees, etats_selectionnes, codes_sh4_selectionnes
-            )
-            st.write("Substitution des valeurs Québec (ISQ)...")
-            df_provincial = substituer_isq(
-                df_provincial, annees_selectionnees, flux_cochees,
-                etats_selectionnes, codes_sh4_selectionnes
-            )
-            st.write("Fournisseurs étrangers de l'état visé (Census)...")
-            df_pays = extraire_pays_pour_etat(
-                annees_selectionnees, flux_cochees, etats_selectionnes, codes_sh4_selectionnes
-            )
+                # Deux extractions SÉPARÉES, chacune restreinte à ses 25
+                # codes -- jamais les deux flux sur l'union des codes (voir
+                # docstring de top25_sh4_isq pour le bug que ça évite).
+                st.write("Ventilation provinciale (CIMT) et fournisseurs étrangers (Census)...")
+                morceaux_provincial, morceaux_pays = [], []
+                for flux_val in ("DE", "TI"):
+                    codes_flux = codes_par_flux[flux_val]
+                    if not codes_flux:
+                        continue
+                    dfp = extraire_provincial(
+                        annees_selectionnees, [flux_val], etats_selectionnes, codes_flux
+                    )
+                    dfp = substituer_isq(
+                        dfp, annees_selectionnees, [flux_val], etats_selectionnes, codes_flux
+                    )
+                    dfy = extraire_pays_pour_etat(
+                        annees_selectionnees, [flux_val], etats_selectionnes, codes_flux
+                    )
+                    morceaux_provincial.append(dfp)
+                    morceaux_pays.append(dfy)
+                df_provincial = (pd.concat(morceaux_provincial, ignore_index=True)
+                                  if morceaux_provincial else pd.DataFrame())
+                df_pays = (pd.concat(morceaux_pays, ignore_index=True)
+                           if morceaux_pays else pd.DataFrame())
+            else:
+                st.write("Ventilation provinciale (CIMT)...")
+                df_provincial = extraire_provincial(
+                    annees_selectionnees, flux_cochees, etats_selectionnes, codes_sh4_selectionnes
+                )
+                st.write("Substitution des valeurs Québec (ISQ)...")
+                df_provincial = substituer_isq(
+                    df_provincial, annees_selectionnees, flux_cochees,
+                    etats_selectionnes, codes_sh4_selectionnes
+                )
+                st.write("Fournisseurs étrangers de l'état visé (Census)...")
+                df_pays = extraire_pays_pour_etat(
+                    annees_selectionnees, flux_cochees, etats_selectionnes, codes_sh4_selectionnes
+                )
+
             st.write("Calcul des classements...")
             df_resultat = calculer_rangs(df_provincial, df_pays)
 
