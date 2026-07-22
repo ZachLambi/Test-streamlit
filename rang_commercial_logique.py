@@ -221,12 +221,23 @@ def _candidats_par_groupe(df_qc: pd.DataFrame, df_provincial: pd.DataFrame,
     fusion provinces+pays entre les deux. Pour chaque ligne Québec (un
     groupe partenaire/hs6/année/flux), produit (cle, ligne_qc, candidats)
     où candidats est la liste COMPLÈTE (Québec + provinces + pays) triée
-    par valeur décroissante -- (nom, valeur, est_qc)."""
+    par valeur décroissante -- (nom, valeur, est_qc).
+
+    Le TRI utilise 'valeur_usd' (harmonisée) si la colonne est présente,
+    PAS 'valeur' (qui peut être en devise "Native (par source)", donc un
+    mélange CAD/USD non comparable) -- sinon l'ordre affiché contredirait
+    le rang déjà calculé sur une base harmonisée (voir calculer_rangs).
+    Si 'valeur_usd' est absente (df plus ancien/appel externe), on retombe
+    sur 'valeur' pour rester rétrocompatible."""
     cle_groupe = ["partenaire", "hs6", "annee", "flux"]
+    a_valeur_usd_prov = "valeur_usd" in df_provincial.columns
+    a_valeur_usd_pays = df_pays is not None and not df_pays.empty and "valeur_usd" in df_pays.columns
+
     for _, ligne_qc in df_qc.iterrows():
         cle = tuple(ligne_qc[c] for c in cle_groupe)
 
-        candidats = [("Québec", ligne_qc["valeur"], True)]
+        val_tri_qc = ligne_qc["valeur_usd"] if a_valeur_usd_prov else ligne_qc["valeur"]
+        candidats = [("Québec", ligne_qc["valeur"], True, val_tri_qc)]
 
         autres = df_provincial[
             (df_provincial["partenaire"] == cle[0]) & (df_provincial["hs6"] == cle[1]) &
@@ -234,7 +245,8 @@ def _candidats_par_groupe(df_qc: pd.DataFrame, df_provincial: pd.DataFrame,
             (df_provincial["province"] != "PQC")
         ]
         for _, r in autres.iterrows():
-            candidats.append((noms_geo.get(r["province"], r["province"]), r["valeur"], False))
+            val_tri = r["valeur_usd"] if a_valeur_usd_prov else r["valeur"]
+            candidats.append((noms_geo.get(r["province"], r["province"]), r["valeur"], False, val_tri))
 
         if df_pays is not None and not df_pays.empty:
             pays_grp = df_pays[
@@ -251,9 +263,10 @@ def _candidats_par_groupe(df_qc: pd.DataFrame, df_provincial: pd.DataFrame,
             # de nom DE~TE.
             colonne_pays = "origine" if cle[3] == "DE" else "destination"
             for _, r in pays_grp.iterrows():
-                candidats.append((noms_geo.get(r[colonne_pays], r[colonne_pays]), r["valeur"], False))
+                val_tri = r["valeur_usd"] if a_valeur_usd_pays else r["valeur"]
+                candidats.append((noms_geo.get(r[colonne_pays], r[colonne_pays]), r["valeur"], False, val_tri))
 
-        candidats.sort(key=lambda c: c[1], reverse=True)
+        candidats.sort(key=lambda c: c[3], reverse=True)
         yield cle, ligne_qc, candidats
 
 
@@ -273,7 +286,7 @@ def construire_detail_produit(df_provincial: pd.DataFrame, df_pays: pd.DataFrame
 
     lignes = []
     for cle, ligne_qc, candidats in _candidats_par_groupe(df_qc, df_provincial, df_pays, noms_geo):
-        top_nom, top_valeur, _ = candidats[0]
+        top_nom, top_valeur, _, _ = candidats[0]
         lignes.append({
             "partenaire": cle[0], "hs6": cle[1], "annee": cle[2], "flux": cle[3],
             "rang_qc": int(ligne_qc["Rang_vs_tous_fournisseurs"]),
@@ -301,7 +314,7 @@ def construire_top10_produit(df_provincial: pd.DataFrame, df_pays: pd.DataFrame,
 
     lignes = []
     for cle, _ligne_qc, candidats in _candidats_par_groupe(df_qc, df_provincial, df_pays, noms_geo):
-        for rang, (nom, valeur, est_qc) in enumerate(candidats[:top_n], start=1):
+        for rang, (nom, valeur, est_qc, _) in enumerate(candidats[:top_n], start=1):
             lignes.append({
                 "partenaire": cle[0], "hs6": cle[1], "annee": cle[2], "flux": cle[3],
                 "rang": rang, "nom": nom, "valeur": valeur, "est_qc": est_qc,

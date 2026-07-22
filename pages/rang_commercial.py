@@ -134,7 +134,7 @@ def _afficher_bloc_flux(flux_val: str, prefixe: str, df_affiche: pd.DataFrame,
         return
 
     onglet_resume, onglet_detail, onglet_tendance, onglet_donnees = st.tabs(
-        ["📋 Résumé", "🔍 Détail par produit", "📈 Tendance", "📄 Données complètes"]
+        ["📋 Top 25", "🔍 Détail par produit", "📈 Tendance", "📄 Données complètes"]
     )
 
     # ── ONGLET RÉSUMÉ ──────────────────────────────────────────────────────
@@ -402,8 +402,12 @@ with st.sidebar:
     with st.container(border=True):
         st.markdown("**Devise d'affichage**")
         devise_rc = st.radio(
-            "Devise", options=["USD", "CAD", "Native (par source)"],
+            "Devise", options=["USD", "CAD"],
             index=0, key="rc_devise", label_visibility="collapsed",
+            help="Pas d'option 'Native (par source)' ici -- cet outil compare "
+                 "le Québec à des provinces (CIMT/ISQ, natif CAD) ET à des "
+                 "pays étrangers (Census, natif USD) dans le MÊME classement. "
+                 "Comparer sans harmoniser la devise n'aurait aucun sens.",
         )
 
     lancer = st.button("Extraire", type="primary", width='stretch', key="rc_extraire")
@@ -474,12 +478,45 @@ if lancer:
                 )
 
             st.write("Calcul des classements...")
-            df_resultat = calculer_rangs(df_provincial, df_pays)
+            # CORRECTIF (22 juillet 2026) -- calculer_rangs() comparait
+            # jusqu'ici des valeurs NATIVES non harmonisées : CIMT/ISQ
+            # (natif CAD) directement contre Census (natif USD), SANS
+            # conversion, avant que la devise choisie par l'utilisateur ne
+            # soit appliquée. Résultat : un rang faux dès que la comparaison
+            # traversait les deux devises (ex. SH4 7601, Illinois 2025 --
+            # le Québec affiché #1 alors qu'il était #2, les Émirats arabes
+            # unis étant en USD natif jamais convertis avant la comparaison
+            # avec le Québec en CAD natif). On harmonise donc TOUJOURS en
+            # USD pour le calcul des rangs, peu importe la devise
+            # d'affichage choisie (même "Native (par source)") -- un rang
+            # n'a de sens que sur des valeurs comparables.
+            df_provincial_usd = d.convertir_devise(df_provincial, "USD")
+            df_pays_usd = d.convertir_devise(df_pays, "USD") if not df_pays.empty else df_pays
+            df_avec_rangs = calculer_rangs(df_provincial_usd, df_pays_usd)
+            colonnes_rang = ["Rang_vs_provinces", "Nb_provinces",
+                              "Rang_vs_tous_fournisseurs", "Nb_fournisseurs_total"]
 
-            if devise_rc != "Native (par source)" and not df_resultat.empty:
-                df_resultat = d.convertir_devise(df_resultat, devise_rc)
+            # Devise d'AFFICHAGE demandée (USD ou CAD seulement -- pas de
+            # mode "Native", voir sidebar) -- appliquée après coup, sur les
+            # valeurs seulement, jamais sur les rangs (déjà corrects
+            # ci-dessus). "valeur_usd" (harmonisée) est conservée dans
+            # chaque branche pour que le TRI des candidats dans
+            # construire_top10_produit/construire_detail_produit reste
+            # toujours basé sur une comparaison valide.
+            if devise_rc == "USD":
+                df_resultat = df_avec_rangs
+                df_resultat["valeur_usd"] = df_avec_rangs["valeur"]
+                df_pays = df_pays_usd
                 if not df_pays.empty:
-                    df_pays = d.convertir_devise(df_pays, devise_rc)
+                    df_pays["valeur_usd"] = df_pays_usd["valeur"]
+            else:  # CAD
+                df_resultat = d.convertir_devise(df_provincial, devise_rc)
+                if colonnes_rang[0] in df_avec_rangs.columns:
+                    df_resultat[colonnes_rang] = df_avec_rangs[colonnes_rang]
+                df_resultat["valeur_usd"] = df_provincial_usd["valeur"]
+                df_pays = d.convertir_devise(df_pays, devise_rc) if not df_pays.empty else df_pays
+                if not df_pays.empty:
+                    df_pays["valeur_usd"] = df_pays_usd["valeur"]
 
             st.write("Construction du détail par produit...")
             df_detail = construire_detail_produit(df_resultat, df_pays, noms_geo)
@@ -499,13 +536,13 @@ if lancer:
 df_affiche = st.session_state.get(cle_session, pd.DataFrame())
 df_detail = st.session_state.get("rc_df_detail", pd.DataFrame())
 df_top10 = st.session_state.get("rc_df_top10", pd.DataFrame())
-devise_resultat = st.session_state.get("rc_devise_resultat", "Native (par source)")
+devise_resultat = st.session_state.get("rc_devise_resultat", "USD")
 
 if df_affiche.empty:
     st.info("Configure tes filtres dans la barre latérale, puis clique **Extraire**.")
 else:
     noms_geo = d.referentiel_geo()
-    unite = devise_resultat if devise_resultat != "Native (par source)" else ""
+    unite = devise_resultat
 
     onglet_fournisseur, onglet_client = st.tabs([
         "🚚 Fournisseur — le Québec vend à l'état (DE)",
