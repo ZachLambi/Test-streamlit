@@ -61,41 +61,59 @@ st.markdown(
 _COULEURS_MEDAILLE = {1: ("#d4af37", "#ffffff"), 2: ("#9aa1ac", "#ffffff"), 3: ("#b08d57", "#ffffff")}
 
 
-def _html_leaderboard(df_rangs: pd.DataFrame, unite: str) -> str:
-    """Rendu HTML type 'site web' (liste/leaderboard) pour un top 10 --
-    remplace le st.dataframe, jugé trop lourd (mini-tableur avec en-têtes/
-    scrollbar) pour seulement 10 lignes qu'on scanne d'un coup d'œil plutôt
-    que qu'on trie/exporte. Le Québec est mis en évidence par un fond teinté
-    + bordure gauche, pas seulement l'émoji 🍁, pour ressortir même hors
-    podium."""
+_COULEUR_HIGHLIGHT = "#1d6fd6"  # bleu -- QC dans les top10, ou #1 dans le top25 produits
+_ICONE_HIGHLIGHT = "⚜️"
+
+
+def _html_leaderboard(lignes: list[dict], unite: str, libelle_colonne: str) -> str:
+    """Rendu HTML type 'site web' (liste/leaderboard), réutilisé pour le
+    top 10 par produit ET le top 25 produits -- remplace le st.dataframe,
+    jugé trop lourd (mini-tableur avec en-têtes/scrollbar) pour une liste
+    qu'on scanne d'un coup d'œil plutôt qu'on trie/exporte.
+
+    Chaque élément de `lignes` est un dict :
+      rang (int), titre (str), valeur (float),
+      sous_titre (str, optionnel), highlight (bool, optionnel).
+    Une ligne 'highlight' ressort par un fond bleu teinté + bordure gauche +
+    icône ⚜️, pas seulement le texte -- pour rester visible même hors podium."""
     entete = (
         '<div style="display:flex; align-items:center; padding:0.2rem 0.6rem; '
         'font-size:0.72rem; color:#8a909c; text-transform:uppercase; letter-spacing:0.03em;">'
         '<div style="flex:0 0 28px;"></div>'
-        '<div style="flex:1; margin-left:0.7rem;">Fournisseur / Client</div>'
+        f'<div style="flex:1; margin-left:0.7rem;">{_html.escape(libelle_colonne)}</div>'
         f'<div>Valeur ({_html.escape(unite) if unite else "native"})</div>'
         '</div>'
     )
-    lignes = [entete]
-    for _, r in df_rangs.iterrows():
-        rang, nom, valeur, est_qc = int(r["rang"]), r["nom"], r["valeur"], bool(r["est_qc"])
+    blocs = [entete]
+    for l in lignes:
+        rang = int(l["rang"])
+        titre, valeur = l["titre"], l["valeur"]
+        sous_titre = l.get("sous_titre")
+        highlight = bool(l.get("highlight", False))
+
         bg_badge, fg_badge = _COULEURS_MEDAILLE.get(rang, ("#e4e7ec", "#5b6270"))
-        fond_ligne = "background:rgba(214,40,40,0.07); border-left:3px solid #d62828;" if est_qc \
-            else "border-left:3px solid transparent;"
-        poids = "700" if est_qc else "400"
-        nom_affiche = ("🍁 " if est_qc else "") + _html.escape(str(nom))
+        fond_ligne = (f"background:{_COULEUR_HIGHLIGHT}14; border-left:3px solid {_COULEUR_HIGHLIGHT};"
+                      if highlight else "border-left:3px solid transparent;")
+        poids = "700" if highlight else "400"
+        titre_affiche = (f"{_ICONE_HIGHLIGHT} " if highlight else "") + _html.escape(str(titre))
         valeur_fmt = f"{valeur:,.0f}".replace(",", "\u202f")
-        lignes.append(
+
+        bloc_titre = f'<div style="font-weight:{poids};">{titre_affiche}</div>'
+        if sous_titre:
+            bloc_titre += (f'<div style="font-size:0.72rem; color:#8a909c; margin-top:0.05rem;">'
+                           f'{_html.escape(str(sous_titre))}</div>')
+
+        blocs.append(
             '<div style="display:flex; align-items:center; padding:0.4rem 0.6rem; '
             f'{fond_ligne} border-radius:0.3rem;">'
             f'<div style="flex:0 0 28px; height:28px; border-radius:50%; background:{bg_badge}; '
             f'color:{fg_badge}; display:flex; align-items:center; justify-content:center; '
-            f'font-size:0.78rem; font-weight:700;">{rang}</div>'
-            f'<div style="flex:1; margin-left:0.7rem; font-weight:{poids};">{nom_affiche}</div>'
-            f'<div style="font-variant-numeric:tabular-nums; font-weight:{poids};">{valeur_fmt}</div>'
+            f'font-size:0.78rem; font-weight:700; flex-shrink:0; align-self:flex-start; margin-top:0.1rem;">{rang}</div>'
+            f'<div style="flex:1; margin-left:0.7rem;">{bloc_titre}</div>'
+            f'<div style="font-variant-numeric:tabular-nums; font-weight:{poids}; white-space:nowrap;">{valeur_fmt}</div>'
             '</div>'
         )
-    return '<div style="display:flex; flex-direction:column; gap:0.15rem;">' + "".join(lignes) + "</div>"
+    return '<div style="display:flex; flex-direction:column; gap:0.15rem;">' + "".join(blocs) + "</div>"
 
 
 def _afficher_bloc_flux(flux_val: str, prefixe: str, df_affiche: pd.DataFrame,
@@ -119,28 +137,6 @@ def _afficher_bloc_flux(flux_val: str, prefixe: str, df_affiche: pd.DataFrame,
         ["📋 Résumé", "🔍 Détail par produit", "📈 Tendance", "📄 Données complètes"]
     )
 
-    def _tableau_medailles() -> tuple[pd.DataFrame, list[str]]:
-        """1 ligne par produit avec médaille -- construit une fois, utilisé
-        dans l'onglet Résumé."""
-        df_aff = df_detail_flux.copy()
-        df_aff["Partenaire"] = df_aff["partenaire"].map(lambda c: noms_geo.get(c, c))
-        df_aff = df_aff.sort_values("rang_qc")
-
-        def _medaille(rang: int) -> str:
-            return {1: "🥇", 2: "🥈", 3: "🥉"}.get(rang, "")
-
-        df_aff.insert(0, "", df_aff["rang_qc"].map(_medaille))
-        df_aff = df_aff.rename(columns={
-            "hs6": "Code SH4", "annee": "Année",
-            "rang_qc": "Rang Québec", "nb_total": "Nb fournisseurs",
-            "valeur_qc": f"Flux Québec ({unite})",
-            "top_nom": "1er fournisseur/client", "top_valeur": f"Valeur #1 ({unite})",
-        })
-        colonnes = ["", "Code SH4", "Partenaire", "Année", "Rang Québec",
-                    "Nb fournisseurs", f"Flux Québec ({unite})",
-                    "1er fournisseur/client", f"Valeur #1 ({unite})"]
-        return df_aff, colonnes
-
     # ── ONGLET RÉSUMÉ ──────────────────────────────────────────────────────
     with onglet_resume:
         stats = resume_stats(df_detail_flux)
@@ -156,20 +152,50 @@ def _afficher_bloc_flux(flux_val: str, prefixe: str, df_affiche: pd.DataFrame,
             c2.metric("🎯 Rang ≤ 3", f"{stats['rang3']} / {stats['nb_total']}")
             c3.metric("📊 Rang moyen", stats["rang_moyen"] if stats["rang_moyen"] is not None else "N/D")
 
-        # Tableau détail (médailles) -- déplacé ici, sous le container de
-        # stats, dans son propre container.
-        with st.container(key=f"rc_tableau_detail_{prefixe}", border=True):
+        # Top 25 produits -- même UI liste que le top 10 par produit (badge
+        # de rang, ⚜️ bleu sur les produits où le Québec est #1), à la place
+        # de l'ancien tableau dataframe. Triés par rang_qc (comme avant),
+        # pas par valeur -- un produit où QC est #1 ressort en premier.
+        with st.container(key=f"rc_top25_{prefixe}", border=True):
             if df_detail_flux.empty:
                 st.info("Aucun résultat à détailler.")
             else:
-                df_aff, colonnes = _tableau_medailles()
-                st.dataframe(
-                    df_aff[colonnes], width='stretch', height=420, hide_index=True,
-                    column_config={
-                        f"Flux Québec ({unite})": st.column_config.NumberColumn(format="%,.0f"),
-                        f"Valeur #1 ({unite})": st.column_config.NumberColumn(format="%,.0f"),
-                    },
+                df_tri = df_detail_flux.sort_values("rang_qc").copy()
+                df_tri["Partenaire"] = df_tri["partenaire"].map(lambda c: noms_geo.get(c, c))
+                plusieurs_partenaires_resume = df_tri["Partenaire"].nunique() > 1
+
+                lignes_top25 = []
+                for _, r in df_tri.iterrows():
+                    titre = f"SH4 {r['hs6']}"
+                    if plusieurs_partenaires_resume:
+                        titre += f" · {r['Partenaire']}"
+                    sous_titre = (f"1er : {r['top_nom']} ({r['top_valeur']:,.0f} {unite}) "
+                                  f"· {r['nb_total']} au total")
+                    lignes_top25.append({
+                        "rang": r["rang_qc"], "titre": titre, "valeur": r["valeur_qc"],
+                        "sous_titre": sous_titre, "highlight": r["rang_qc"] == 1,
+                    })
+                st.markdown(
+                    _html_leaderboard(lignes_top25, unite, "Produit"), unsafe_allow_html=True
                 )
+
+                st.caption("Format du fichier téléchargé à finaliser — export brut pour l'instant.")
+                col_dl1, col_dl2, _ = st.columns([1, 1, 2])
+                with col_dl1:
+                    st.download_button(
+                        "📥 Top 25 produits — Excel",
+                        data=exporter_excel({"Top produits": df_tri}, devise_resultat),
+                        file_name=f"rang_commercial_top_produits_{prefixe}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        width='stretch', key=f"rc_dl_top25_xlsx_{prefixe}",
+                    )
+                with col_dl2:
+                    st.download_button(
+                        "📥 Top 25 produits — CSV",
+                        data=exporter_csv(df_tri),
+                        file_name=f"rang_commercial_top_produits_{prefixe}.csv", mime="text/csv",
+                        width='stretch', key=f"rc_dl_top25_csv_{prefixe}",
+                    )
 
     # ── ONGLET DÉTAIL PAR PRODUIT (top 10 empilés, un container par SH4) ────
     with onglet_detail:
@@ -183,7 +209,27 @@ def _afficher_bloc_flux(flux_val: str, prefixe: str, df_affiche: pd.DataFrame,
             groupes = groupes.sort_values(["hs6", "annee", "partenaire"])
 
             st.caption(f"{len(groupes)} produit(s) — top {min(10, int(df_top10_flux['rang'].max()))} "
-                       "fournisseurs/clients par produit, Québec 🍁 mis en évidence.")
+                       "fournisseurs/clients par produit, Québec ⚜️ mis en évidence.")
+
+            col_dl1, col_dl2, _ = st.columns([1, 1, 2])
+            df_top10_export = df_top10_flux.copy()
+            df_top10_export["Partenaire"] = df_top10_export["partenaire"].map(lambda c: noms_geo.get(c, c))
+            with col_dl1:
+                st.download_button(
+                    "📥 Top 10 par produit — Excel",
+                    data=exporter_excel({"Top 10 par produit": df_top10_export}, devise_resultat),
+                    file_name=f"rang_commercial_top10_par_produit_{prefixe}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    width='stretch', key=f"rc_dl_top10_xlsx_{prefixe}",
+                )
+            with col_dl2:
+                st.download_button(
+                    "📥 Top 10 par produit — CSV",
+                    data=exporter_csv(df_top10_export),
+                    file_name=f"rang_commercial_top10_par_produit_{prefixe}.csv", mime="text/csv",
+                    width='stretch', key=f"rc_dl_top10_csv_{prefixe}",
+                )
+            st.caption("Format du fichier téléchargé à finaliser — export brut pour l'instant.")
 
             for _, g in groupes.iterrows():
                 sous = df_top10_flux[
@@ -198,10 +244,18 @@ def _afficher_bloc_flux(flux_val: str, prefixe: str, df_affiche: pd.DataFrame,
                 if plusieurs_annees:
                     titre.append(str(g["annee"]))
 
+                lignes_top10 = [
+                    {"rang": r["rang"], "titre": r["nom"], "valeur": r["valeur"], "highlight": r["est_qc"]}
+                    for _, r in sous.iterrows()
+                ]
+
                 cle_container = f"rc_top10_{prefixe}_{g['hs6']}_{g['partenaire']}_{g['annee']}"
                 with st.container(key=cle_container, border=True):
                     st.markdown(f"**{' · '.join(titre)}**")
-                    st.markdown(_html_leaderboard(sous, unite), unsafe_allow_html=True)
+                    st.markdown(
+                        _html_leaderboard(lignes_top10, unite, "Fournisseur / Client"),
+                        unsafe_allow_html=True,
+                    )
 
     # ── ONGLET TENDANCE ───────────────────────────────────────────────────
     with onglet_tendance:
