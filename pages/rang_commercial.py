@@ -16,6 +16,8 @@ UI v3 (20 juillet 2026, 2e refonte après retour utilisateur) :
     le temps (pertinent seulement si plusieurs années sont sélectionnées).
 """
 
+import html as _html
+
 import streamlit as st
 import pandas as pd
 
@@ -54,6 +56,46 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+
+_COULEURS_MEDAILLE = {1: ("#d4af37", "#ffffff"), 2: ("#9aa1ac", "#ffffff"), 3: ("#b08d57", "#ffffff")}
+
+
+def _html_leaderboard(df_rangs: pd.DataFrame, unite: str) -> str:
+    """Rendu HTML type 'site web' (liste/leaderboard) pour un top 10 --
+    remplace le st.dataframe, jugé trop lourd (mini-tableur avec en-têtes/
+    scrollbar) pour seulement 10 lignes qu'on scanne d'un coup d'œil plutôt
+    que qu'on trie/exporte. Le Québec est mis en évidence par un fond teinté
+    + bordure gauche, pas seulement l'émoji 🍁, pour ressortir même hors
+    podium."""
+    entete = (
+        '<div style="display:flex; align-items:center; padding:0.2rem 0.6rem; '
+        'font-size:0.72rem; color:#8a909c; text-transform:uppercase; letter-spacing:0.03em;">'
+        '<div style="flex:0 0 28px;"></div>'
+        '<div style="flex:1; margin-left:0.7rem;">Fournisseur / Client</div>'
+        f'<div>Valeur ({_html.escape(unite) if unite else "native"})</div>'
+        '</div>'
+    )
+    lignes = [entete]
+    for _, r in df_rangs.iterrows():
+        rang, nom, valeur, est_qc = int(r["rang"]), r["nom"], r["valeur"], bool(r["est_qc"])
+        bg_badge, fg_badge = _COULEURS_MEDAILLE.get(rang, ("#e4e7ec", "#5b6270"))
+        fond_ligne = "background:rgba(214,40,40,0.07); border-left:3px solid #d62828;" if est_qc \
+            else "border-left:3px solid transparent;"
+        poids = "700" if est_qc else "400"
+        nom_affiche = ("🍁 " if est_qc else "") + _html.escape(str(nom))
+        valeur_fmt = f"{valeur:,.0f}".replace(",", "\u202f")
+        lignes.append(
+            '<div style="display:flex; align-items:center; padding:0.4rem 0.6rem; '
+            f'{fond_ligne} border-radius:0.3rem;">'
+            f'<div style="flex:0 0 28px; height:28px; border-radius:50%; background:{bg_badge}; '
+            f'color:{fg_badge}; display:flex; align-items:center; justify-content:center; '
+            f'font-size:0.78rem; font-weight:700;">{rang}</div>'
+            f'<div style="flex:1; margin-left:0.7rem; font-weight:{poids};">{nom_affiche}</div>'
+            f'<div style="font-variant-numeric:tabular-nums; font-weight:{poids};">{valeur_fmt}</div>'
+            '</div>'
+        )
+    return '<div style="display:flex; flex-direction:column; gap:0.15rem;">' + "".join(lignes) + "</div>"
 
 
 def _afficher_bloc_flux(flux_val: str, prefixe: str, df_affiche: pd.DataFrame,
@@ -159,17 +201,7 @@ def _afficher_bloc_flux(flux_val: str, prefixe: str, df_affiche: pd.DataFrame,
                 cle_container = f"rc_top10_{prefixe}_{g['hs6']}_{g['partenaire']}_{g['annee']}"
                 with st.container(key=cle_container, border=True):
                     st.markdown(f"**{' · '.join(titre)}**")
-                    df_aff = sous.copy()
-                    df_aff[""] = df_aff["rang"].map(lambda r: {1: "🥇", 2: "🥈", 3: "🥉"}.get(r, ""))
-                    df_aff["Fournisseur / Client"] = df_aff.apply(
-                        lambda r: f"🍁 {r['nom']}" if r["est_qc"] else r["nom"], axis=1
-                    )
-                    df_aff = df_aff.rename(columns={"rang": "Rang", "valeur": f"Valeur ({unite})"})
-                    st.dataframe(
-                        df_aff[["", "Rang", "Fournisseur / Client", f"Valeur ({unite})"]],
-                        width='stretch', hide_index=True,
-                        column_config={f"Valeur ({unite})": st.column_config.NumberColumn(format="%,.0f")},
-                    )
+                    st.markdown(_html_leaderboard(sous, unite), unsafe_allow_html=True)
 
     # ── ONGLET TENDANCE ───────────────────────────────────────────────────
     with onglet_tendance:
