@@ -117,18 +117,45 @@ def extraire_pays_pour_etat(annees: list[int], flux: list[str], etats_us: list[s
     """Ventilation par pays étranger (Canada exclu, déjà couvert par le
     détail provincial CIMT) des fournisseurs/clients du ou des état(s)
     demandé(s) -- remplace l'API Census, vient du parquet Census (SH6
-    agrégé localement en SH4)."""
+    agrégé localement en SH4).
+
+    CORRECTIF (21 juillet 2026, v2) -- Census et CIMT ont des conventions
+    côté A/B INVERSÉES (voir _ajouter_partenaire_census vs
+    _ajouter_province_et_partenaire_cimt), ce qui inverse aussi la
+    correspondance entre leurs labels de flux. Vérifié sur les données
+    brutes (colonnes origine/destination/type_ori/type_dest) :
+      CIMT  DE -> province=origine, état=destination  (la province EXPORTE
+            vers l'état, donc l'état IMPORTE)
+      CIMT  TI -> état=origine, province=destination  (l'état EXPORTE vers
+            la province, donc la province IMPORTE)
+      Census TE -> état=origine, pays=destination     (l'état EXPORTE vers
+            le pays -- même sens que CIMT TI, PAS CIMT DE)
+      Census TI -> pays=origine, état=destination     (le pays EXPORTE vers
+            l'état, donc l'état IMPORTE -- même sens que CIMT DE, PAS TE)
+    Autrement dit, la correspondance par NOM (DE~TE, TI~TI) est FAUSSE --
+    la bonne correspondance par SENS DE FLUX est DE<->TI(Census) et
+    TI<->TE(Census). Une v1 de ce correctif avait mappé DE->TE, ce qui
+    comparait à tort le Québec-fournisseur (CIMT DE) avec les pays-clients
+    de l'état (Census TE) -- deux rôles opposés. Corrigé : on interroge
+    Census avec le flux correspondant au bon SENS, puis on relabellise le
+    résultat selon la convention CIMT pour rejoindre la clé de groupe du
+    détail provincial."""
+    correspondance_cimt_vers_census = {"DE": "TI", "TI": "TE"}
+    correspondance_census_vers_cimt = {"TI": "DE", "TE": "TI"}
+    flux_census = [correspondance_cimt_vers_census.get(f, f) for f in flux]
     df = d.extraire(
-        sources=["CENSUS"], annees=annees, flux=flux,
+        sources=["CENSUS"], annees=annees, flux=flux_census,
         partenaires_a=etats_us, hs6_prefixes=codes_sh4,
     )
     if df.empty:
         return df
     # Filtre agnostique au sens du flux -- Canada peut apparaître en
-    # origine (DE/TE) ou destination (TI) côté Census.
+    # origine (TE) ou destination (TI) côté Census.
     df = df[(df.get("origine") != CODE_CANADA_CENSUS) & (df.get("destination") != CODE_CANADA_CENSUS)]
     df = _agreger_sh6_vers_sh4(df)
-    return _ajouter_partenaire_census(df)
+    df = _ajouter_partenaire_census(df)
+    df["flux"] = df["flux"].map(lambda f: correspondance_census_vers_cimt.get(f, f))
+    return df
 
 
 def calculer_rangs(df_provincial: pd.DataFrame, df_pays: pd.DataFrame) -> pd.DataFrame:
@@ -221,10 +248,15 @@ def construire_detail_produit(df_provincial: pd.DataFrame, df_pays: pd.DataFrame
                 (df_pays["partenaire"] == cle[0]) & (df_pays["hs6"] == cle[1]) &
                 (df_pays["annee"] == cle[2]) & (df_pays["flux"] == cle[3])
             ]
-            # Census : état = côté A (origine pour DE/TE, destination pour TI,
-            # voir _ajouter_partenaire_census) -- le PAYS est donc l'INVERSE :
-            # destination pour DE/TE, origine pour TI.
-            colonne_pays = "destination" if cle[3] in ("DE", "TE") else "origine"
+            # Census : après translation dans extraire_pays_pour_etat, une
+            # ligne df_pays de flux 'DE' provient à l'origine d'une ligne
+            # Census TI (pays=origine, état=destination -- le pays exporte
+            # vers l'état). Une ligne de flux 'TI' provient d'une ligne
+            # Census TE (état=origine, pays=destination -- l'état exporte
+            # vers le pays). Le nom du pays est donc en 'origine' pour 'DE'
+            # et en 'destination' pour 'TI' -- PAS l'inverse par ressemblance
+            # de nom DE~TE.
+            colonne_pays = "origine" if cle[3] == "DE" else "destination"
             for _, r in pays_grp.iterrows():
                 candidats.append((noms_geo.get(r[colonne_pays], r[colonne_pays]), r["valeur"]))
 
@@ -252,7 +284,7 @@ def resume_stats(df_detail_produit: pd.DataFrame) -> dict:
         }
     rangs = df_detail_produit["rang_qc"]
     return {
-        "nb_produits": len(df_detail_produit),
+        "nb_produits": int(df_detail_produit["hs6"].nunique()),
         "total_flux": df_detail_produit["valeur_qc"].sum(),
         "rang1": int((rangs == 1).sum()),
         "rang2": int((rangs <= 2).sum()),

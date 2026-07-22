@@ -61,10 +61,37 @@ with st.sidebar:
         if mode == "Sélection personnalisée":
             flux_cochees = st.multiselect(
                 "Flux", options=["DE", "TI"], default=["DE", "TI"], key="rc_flux",
+                help="**DE (Fournisseur)** : QC/provinces (production réelle, CIMT/ISQ) "
+                     "vs pays étrangers (Census, pays d'origine réelle) -- bases "
+                     "cohérentes des deux côtés, aucun biais connu.\n\n"
+                     "**TI (Client)** ⚠️ : QC/provinces (CIMT, importations totales) vs "
+                     "exportations de l'état (Census, méthode *Origin of Movement* -- "
+                     "attribuées à l'état d'où le bien a commencé son parcours "
+                     "d'exportation, souvent un port, PAS nécessairement l'état "
+                     "producteur). Un état enclavé sans grand port peut être "
+                     "sous-représenté, un état-port sur-représenté -- biais documenté "
+                     "par le Census Bureau lui-même (~5 % de la valeur d'exportation "
+                     "non attribuable à un état). Non corrigeable avec les données "
+                     "disponibles -- à garder en tête pour l'interprétation du côté "
+                     "Client seulement.",
             )
         else:
             st.caption("DE et TI sont calculés automatiquement en mode Top25 "
-                       "(les codes SH4 sont déterminés séparément en TE et TI).")
+                       "(les codes SH4 sont déterminés séparément en TE et TI).",
+                       help="**DE (Fournisseur)** : QC/provinces (production réelle, "
+                            "CIMT/ISQ) vs pays étrangers (Census, pays d'origine réelle) "
+                            "-- bases cohérentes des deux côtés, aucun biais connu.\n\n"
+                            "**TI (Client)** ⚠️ : QC/provinces (CIMT, importations "
+                            "totales) vs exportations de l'état (Census, méthode "
+                            "*Origin of Movement* -- attribuées à l'état d'où le bien a "
+                            "commencé son parcours d'exportation, souvent un port, PAS "
+                            "nécessairement l'état producteur). Un état enclavé sans "
+                            "grand port peut être sous-représenté, un état-port "
+                            "sur-représenté -- biais documenté par le Census Bureau "
+                            "lui-même (~5 % de la valeur d'exportation non attribuable "
+                            "à un état). Non corrigeable avec les données disponibles "
+                            "-- à garder en tête pour l'interprétation du côté Client "
+                            "seulement.")
             flux_cochees = ["DE", "TI"]
 
     with st.container(border=True):
@@ -159,15 +186,21 @@ if lancer:
 
         st.session_state[cle_session] = df_resultat
         st.session_state["rc_df_detail"] = df_detail
+        # Gèle la devise utilisée POUR CETTE EXTRACTION -- ne doit plus
+        # bouger tant qu'une nouvelle extraction n'est pas lancée, même si
+        # le widget "rc_devise" change entre-temps (voir usage de
+        # devise_resultat, pas devise_rc, dans tout l'affichage ci-dessous).
+        st.session_state["rc_devise_resultat"] = devise_rc
 
 df_affiche = st.session_state.get(cle_session, pd.DataFrame())
 df_detail = st.session_state.get("rc_df_detail", pd.DataFrame())
+devise_resultat = st.session_state.get("rc_devise_resultat", "Native (par source)")
 
 if df_affiche.empty:
     st.info("Configure tes filtres dans la barre latérale, puis clique **Extraire**.")
 else:
     noms_geo = d.referentiel_geo()
-    unite = devise_rc if devise_rc != "Native (par source)" else ""
+    unite = devise_resultat if devise_resultat != "Native (par source)" else ""
 
     onglet_resume, onglet_detail, onglet_tendance, onglet_donnees = st.tabs(
         ["📋 Résumé", "🔍 Détail par produit", "📈 Tendance", "📄 Données complètes"]
@@ -260,7 +293,7 @@ else:
         col1, col2, _ = st.columns([1, 1, 2])
         with col1:
             st.download_button(
-                "📥 Excel", data=exporter_excel({"Rang commercial": df_lisible[colonnes_affichage]}, devise_rc),
+                "📥 Excel", data=exporter_excel({"Rang commercial": df_lisible[colonnes_affichage]}, devise_resultat),
                 file_name="rang_commercial_qc_etats.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 width='stretch', key="rc_dl_xlsx",

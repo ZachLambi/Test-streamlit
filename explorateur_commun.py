@@ -417,11 +417,13 @@ def afficher_onglet_directionnel(source: str) -> None:
                         df, metriques_cochees, annee_min_reelle, cagr_n_annees=cagr_n_annees
                     )
             st.session_state[cle_session] = df
+            # Gèle la devise utilisée POUR CETTE EXTRACTION -- lue par
+            # _afficher_resultats() au lieu du sélecteur global en direct,
+            # pour que le libellé affiché ne bouge plus tant qu'une nouvelle
+            # extraction n'est pas lancée (voir _devise_gelee()).
+            st.session_state[f"{cle_session}_devise"] = devise_cible
 
     _afficher_resultats(source, cle_session)
-
-
-def afficher_onglet_symetrique(source: str) -> None:
     """BACI — pays-à-pays, deux sélecteurs indépendants pour choisir une
     paire. Filtres dans la sidebar, résultats en pleine largeur."""
 
@@ -518,6 +520,7 @@ def afficher_onglet_symetrique(source: str) -> None:
                         df, metriques_cochees, annee_min_reelle, cagr_n_annees=cagr_n_annees
                     )
             st.session_state[cle_session] = df
+            st.session_state[f"{cle_session}_devise"] = devise_cible
 
     _afficher_resultats(source, cle_session)
 
@@ -542,7 +545,11 @@ def _afficher_resultats(source: str, cle_session: str) -> None:
     avec_part_marche = "part_marche_pct" in df.columns
     avec_rang = "rang" in df.columns
 
-    unite_affichee = libelle_unite(source, _devise_choisie())
+    # Devise GELÉE à l'extraction (voir afficher_onglet_directionnel /
+    # afficher_onglet_symetrique) -- pas _devise_choisie() en direct, sinon
+    # le libellé change quand on bouge le sélecteur global sans ré-extraire,
+    # alors que les valeurs affichées restent dans l'ancienne devise.
+    unite_affichee = libelle_unite(source, st.session_state.get(f"{cle_session}_devise"))
     if "devise_affichee" in df.columns:
         n_non_convertis = df["devise_affichee"].astype(str).str.contains("taux manquant").sum()
         if n_non_convertis:
