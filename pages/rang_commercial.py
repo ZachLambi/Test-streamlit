@@ -36,6 +36,143 @@ st.info(
     "terminée.", icon="ℹ️",
 )
 
+# Fond légèrement plus foncé que le blanc par défaut pour le container des
+# stats de rang (Rang 1 / Rang ≤ 3 / Rang moyen) -- but "outlined" visuellement
+# du reste de l'onglet. Ciblé par préfixe de clé (rc_stats_rang_DE /
+# rc_stats_rang_TI, un par flux/onglet) via [class*=...] plutôt qu'une classe
+# exacte, pour couvrir les deux onglets Fournisseur/Client avec une seule règle.
+st.markdown(
+    """
+    <style>
+    div[class*="st-key-rc_stats_rang_"] {
+        background-color: rgba(120, 130, 145, 0.16);
+        border-radius: 0.6rem;
+        padding: 0.9rem 1rem 0.3rem 1rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+def _afficher_bloc_flux(flux_val: str, prefixe: str, df_affiche: pd.DataFrame,
+                         df_detail: pd.DataFrame, unite: str,
+                         annees_selectionnees: list[int], noms_geo: dict,
+                         devise_resultat: str) -> None:
+    """Affiche les 4 sous-onglets (Résumé/Détail/Tendance/Données) pour UN
+    SEUL sens de flux (DE=Fournisseur ou TI=Client) -- appelée une fois par
+    onglet de haut niveau, sur les mêmes df_affiche/df_detail filtrés."""
+    df_flux = df_affiche[df_affiche["flux"] == flux_val] if not df_affiche.empty else df_affiche
+    df_detail_flux = df_detail[df_detail["flux"] == flux_val] if not df_detail.empty else df_detail
+
+    if df_flux.empty:
+        st.info("Aucun résultat pour ce sens de flux — vérifie qu'il est coché "
+                 "dans la barre latérale.")
+        return
+
+    onglet_resume, onglet_detail, onglet_tendance, onglet_donnees = st.tabs(
+        ["📋 Résumé", "🔍 Détail par produit", "📈 Tendance", "📄 Données complètes"]
+    )
+
+    # ── ONGLET RÉSUMÉ ──────────────────────────────────────────────────────
+    with onglet_resume:
+        stats = resume_stats(df_detail_flux)
+        st.subheader(f"{stats['nb_produits']} produit(s) analysé(s)")
+
+        # Total flux Québec SEUL, pleine largeur, rien à côté -- pour être
+        # certain que le montant ne soit jamais tronqué/"cropped".
+        st.metric("💰 Total flux Québec", f"{stats['total_flux']:,.0f} {unite}")
+
+        with st.container(key=f"rc_stats_rang_{prefixe}", border=True):
+            c1, c2, c3 = st.columns(3)
+            c1.metric("🥇 Rang 1", f"{stats['rang1']} / {stats['nb_total']}")
+            c2.metric("🎯 Rang ≤ 3", f"{stats['rang3']} / {stats['nb_total']}")
+            c3.metric("📊 Rang moyen", stats["rang_moyen"] if stats["rang_moyen"] is not None else "N/D")
+
+    # ── ONGLET DÉTAIL PAR PRODUIT (médailles) ───────────────────────────────
+    with onglet_detail:
+        if df_detail_flux.empty:
+            st.info("Aucun résultat à détailler.")
+        else:
+            df_aff = df_detail_flux.copy()
+            df_aff["Partenaire"] = df_aff["partenaire"].map(lambda c: noms_geo.get(c, c))
+            df_aff = df_aff.sort_values("rang_qc")
+
+            def _medaille(rang: int) -> str:
+                return {1: "🥇", 2: "🥈", 3: "🥉"}.get(rang, "")
+
+            df_aff.insert(0, "", df_aff["rang_qc"].map(_medaille))
+            df_aff = df_aff.rename(columns={
+                "hs6": "Code SH4", "annee": "Année",
+                "rang_qc": "Rang Québec", "nb_total": "Nb fournisseurs",
+                "valeur_qc": f"Flux Québec ({unite})",
+                "top_nom": "1er fournisseur/client", "top_valeur": f"Valeur #1 ({unite})",
+            })
+            # Flux retiré des colonnes -- redondant, tout l'onglet est déjà
+            # un seul sens de flux (Fournisseur ou Client).
+            colonnes = ["", "Code SH4", "Partenaire", "Année", "Rang Québec",
+                        "Nb fournisseurs", f"Flux Québec ({unite})",
+                        "1er fournisseur/client", f"Valeur #1 ({unite})"]
+
+            st.dataframe(
+                df_aff[colonnes], width='stretch', height=420, hide_index=True,
+                column_config={
+                    f"Flux Québec ({unite})": st.column_config.NumberColumn(format="%,.0f"),
+                    f"Valeur #1 ({unite})": st.column_config.NumberColumn(format="%,.0f"),
+                },
+            )
+
+    # ── ONGLET TENDANCE ───────────────────────────────────────────────────
+    with onglet_tendance:
+        if len(annees_selectionnees) <= 1:
+            st.info("Sélectionne une plage de plusieurs années dans la barre latérale "
+                    "pour voir l'évolution du rang dans le temps.")
+        elif df_detail_flux.empty:
+            st.info("Aucun résultat à afficher.")
+        else:
+            import plotly.express as px
+
+            df_tendance = df_detail_flux.copy()
+            df_tendance["Partenaire"] = df_tendance["partenaire"].map(lambda c: noms_geo.get(c, c))
+            df_tendance["Série"] = df_tendance["Partenaire"] + " · SH4 " + df_tendance["hs6"]
+            fig = px.line(
+                df_tendance.sort_values("annee"), x="annee", y="rang_qc", color="Série",
+                markers=True,
+                labels={"annee": "Année", "rang_qc": "Rang du Québec (1 = meilleur)"},
+                title="Évolution du rang du Québec dans le temps",
+            )
+            fig.update_yaxes(autorange="reversed")  # rang 1 en haut, plus intuitif
+            st.plotly_chart(fig, width='stretch', key=f"rc_tendance_{prefixe}")
+
+    # ── ONGLET DONNÉES COMPLÈTES ───────────────────────────────────────────
+    with onglet_donnees:
+        df_lisible = df_flux.copy()
+        df_lisible["Province"] = df_lisible["province"].map(lambda c: noms_geo.get(c, c))
+        df_lisible["Partenaire"] = df_lisible["partenaire"].map(lambda c: noms_geo.get(c, c))
+        colonnes_affichage = ["annee", "Province", "Partenaire", "hs6", "valeur",
+                               "Rang_vs_provinces", "Nb_provinces",
+                               "Rang_vs_tous_fournisseurs", "Nb_fournisseurs_total"]
+        colonnes_affichage = [c for c in colonnes_affichage if c in df_lisible.columns]
+
+        st.caption(f"{len(df_lisible):,} ligne(s) — inclut chaque province individuellement, "
+                   "pas seulement le Québec (pour audit/export).")
+        st.dataframe(df_lisible[colonnes_affichage], width='stretch', height=420)
+
+        col1, col2, _ = st.columns([1, 1, 2])
+        with col1:
+            st.download_button(
+                "📥 Excel", data=exporter_excel({"Rang commercial": df_lisible[colonnes_affichage]}, devise_resultat),
+                file_name=f"rang_commercial_qc_etats_{prefixe}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width='stretch', key=f"rc_dl_xlsx_{prefixe}",
+            )
+        with col2:
+            st.download_button(
+                "📥 CSV", data=exporter_csv(df_lisible[colonnes_affichage]),
+                file_name=f"rang_commercial_qc_etats_{prefixe}.csv", mime="text/csv",
+                width='stretch', key=f"rc_dl_csv_{prefixe}",
+            )
+
 with st.sidebar:
     with st.container(border=True):
         st.markdown("**Mode**")
@@ -202,105 +339,14 @@ else:
     noms_geo = d.referentiel_geo()
     unite = devise_resultat if devise_resultat != "Native (par source)" else ""
 
-    onglet_resume, onglet_detail, onglet_tendance, onglet_donnees = st.tabs(
-        ["📋 Résumé", "🔍 Détail par produit", "📈 Tendance", "📄 Données complètes"]
-    )
+    onglet_fournisseur, onglet_client = st.tabs([
+        "🚚 Fournisseur — le Québec vend à l'état (DE)",
+        "🛒 Client — le Québec achète de l'état (TI)",
+    ])
 
-    # ── ONGLET RÉSUMÉ ──────────────────────────────────────────────────────
-    with onglet_resume:
-        stats = resume_stats(df_detail)
-        st.subheader(f"{stats['nb_produits']} produit(s) analysé(s)")
-
-        c1, c2, c3 = st.columns(3)
-        c1.metric("💰 Total flux Québec", f"{stats['total_flux']:,.0f} {unite}")
-        c2.metric("📊 Rang moyen", stats["rang_moyen"] if stats["rang_moyen"] is not None else "N/D")
-        c3.metric("🥇 Rang #1", f"{stats['rang1']} / {stats['nb_total']}")
-
-        c4, c5, c6 = st.columns(3)
-        c4.metric("🥈 Rang ≤ 2", f"{stats['rang2']} / {stats['nb_total']}")
-        c5.metric("🎯 Rang ≤ 5", f"{stats['rang5']} / {stats['nb_total']}")
-        c6.metric("🏅 Rang ≤ 10", f"{stats['rang10']} / {stats['nb_total']}")
-
-    # ── ONGLET DÉTAIL PAR PRODUIT (médailles) ───────────────────────────────
-    with onglet_detail:
-        if df_detail.empty:
-            st.info("Aucun résultat à détailler.")
-        else:
-            df_aff = df_detail.copy()
-            df_aff["Partenaire"] = df_aff["partenaire"].map(lambda c: noms_geo.get(c, c))
-            df_aff = df_aff.sort_values("rang_qc")
-
-            def _medaille(rang: int) -> str:
-                return {1: "🥇", 2: "🥈", 3: "🥉"}.get(rang, "")
-
-            df_aff.insert(0, "", df_aff["rang_qc"].map(_medaille))
-            df_aff = df_aff.rename(columns={
-                "hs6": "Code SH4", "annee": "Année", "flux": "Flux",
-                "rang_qc": "Rang Québec", "nb_total": "Nb fournisseurs",
-                "valeur_qc": f"Flux Québec ({unite})",
-                "top_nom": "1er fournisseur/client", "top_valeur": f"Valeur #1 ({unite})",
-            })
-            colonnes = ["", "Code SH4", "Partenaire", "Année", "Flux", "Rang Québec",
-                        "Nb fournisseurs", f"Flux Québec ({unite})",
-                        "1er fournisseur/client", f"Valeur #1 ({unite})"]
-
-            st.dataframe(
-                df_aff[colonnes], width='stretch', height=420, hide_index=True,
-                column_config={
-                    f"Flux Québec ({unite})": st.column_config.NumberColumn(format="%,.0f"),
-                    f"Valeur #1 ({unite})": st.column_config.NumberColumn(format="%,.0f"),
-                },
-            )
-
-    # ── ONGLET TENDANCE ───────────────────────────────────────────────────
-    with onglet_tendance:
-        if len(annees_selectionnees) <= 1:
-            st.info("Sélectionne une plage de plusieurs années dans la barre latérale "
-                    "pour voir l'évolution du rang dans le temps.")
-        elif df_detail.empty:
-            st.info("Aucun résultat à afficher.")
-        else:
-            import plotly.express as px
-
-            df_tendance = df_detail.copy()
-            df_tendance["Partenaire"] = df_tendance["partenaire"].map(lambda c: noms_geo.get(c, c))
-            df_tendance["Série"] = (
-                df_tendance["Partenaire"] + " · SH4 " + df_tendance["hs6"] + " · " + df_tendance["flux"]
-            )
-            fig = px.line(
-                df_tendance.sort_values("annee"), x="annee", y="rang_qc", color="Série",
-                markers=True,
-                labels={"annee": "Année", "rang_qc": "Rang du Québec (1 = meilleur)"},
-                title="Évolution du rang du Québec dans le temps",
-            )
-            fig.update_yaxes(autorange="reversed")  # rang 1 en haut, plus intuitif
-            st.plotly_chart(fig, width='stretch')
-
-    # ── ONGLET DONNÉES COMPLÈTES ───────────────────────────────────────────
-    with onglet_donnees:
-        df_lisible = df_affiche.copy()
-        df_lisible["Province"] = df_lisible["province"].map(lambda c: noms_geo.get(c, c))
-        df_lisible["Partenaire"] = df_lisible["partenaire"].map(lambda c: noms_geo.get(c, c))
-        colonnes_affichage = ["annee", "flux", "Province", "Partenaire", "hs6", "valeur",
-                               "Rang_vs_provinces", "Nb_provinces",
-                               "Rang_vs_tous_fournisseurs", "Nb_fournisseurs_total"]
-        colonnes_affichage = [c for c in colonnes_affichage if c in df_lisible.columns]
-
-        st.caption(f"{len(df_lisible):,} ligne(s) — inclut chaque province individuellement, "
-                   "pas seulement le Québec (pour audit/export).")
-        st.dataframe(df_lisible[colonnes_affichage], width='stretch', height=420)
-
-        col1, col2, _ = st.columns([1, 1, 2])
-        with col1:
-            st.download_button(
-                "📥 Excel", data=exporter_excel({"Rang commercial": df_lisible[colonnes_affichage]}, devise_resultat),
-                file_name="rang_commercial_qc_etats.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                width='stretch', key="rc_dl_xlsx",
-            )
-        with col2:
-            st.download_button(
-                "📥 CSV", data=exporter_csv(df_lisible[colonnes_affichage]),
-                file_name="rang_commercial_qc_etats.csv", mime="text/csv",
-                width='stretch', key="rc_dl_csv",
-            )
+    with onglet_fournisseur:
+        _afficher_bloc_flux("DE", "de", df_affiche, df_detail, unite,
+                             annees_selectionnees, noms_geo, devise_resultat)
+    with onglet_client:
+        _afficher_bloc_flux("TI", "ti", df_affiche, df_detail, unite,
+                             annees_selectionnees, noms_geo, devise_resultat)

@@ -280,7 +280,7 @@ def resume_stats(df_detail_produit: pd.DataFrame) -> dict:
     if df_detail_produit.empty:
         return {
             "nb_produits": 0, "total_flux": 0.0, "rang1": 0, "rang2": 0,
-            "rang5": 0, "rang10": 0, "rang_moyen": None, "nb_total": 0,
+            "rang3": 0, "rang5": 0, "rang10": 0, "rang_moyen": None, "nb_total": 0,
         }
     rangs = df_detail_produit["rang_qc"]
     return {
@@ -288,6 +288,7 @@ def resume_stats(df_detail_produit: pd.DataFrame) -> dict:
         "total_flux": df_detail_produit["valeur_qc"].sum(),
         "rang1": int((rangs == 1).sum()),
         "rang2": int((rangs <= 2).sum()),
+        "rang3": int((rangs <= 3).sum()),
         "rang5": int((rangs <= 5).sum()),
         "rang10": int((rangs <= 10).sum()),
         "rang_moyen": round(rangs.mean(), 1),
