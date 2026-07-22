@@ -379,3 +379,138 @@ def top25_sh4_isq(annees: list[int], etat: str) -> dict[str, list[str]]:
         totaux = df.groupby("hs6", observed=True)["valeur"].sum().sort_values(ascending=False)
         resultat[flux] = sorted(totaux.head(25).index.tolist())
     return resultat
+
+
+CATEGORIES_FIXES: dict[str, list[str]] = {
+    "Foresterie": ["44", "47", "48"],
+    "Automobile": [f"87{i:02d}" for i in range(1, 12)] + ["8714"],
+    "Aérospatial": ["401130", "840710", "8411", "8526", "88", "901420", "940110"],
+}
+
+
+def top_produits_isq(annees: list[int], etat: str, flux: str, top_n: int = 5) -> pd.DataFrame:
+    """Top N produits SH4 (TOUS produits confondus, aucune restriction de
+    code) pour le commerce du Québec avec l'état visé, sur UN SEUL sens de
+    flux -- utilisé pour le Top 5 de la Vue d'ensemble, indépendamment de
+    toute sélection Top25/personnalisée en cours. Colonnes : hs6, valeur."""
+    df = d.extraire(sources=["ISQ"], annees=annees, flux=[flux], partenaires_b=[etat])
+    if df.empty:
+        return pd.DataFrame(columns=["hs6", "valeur"])
+    df = _agreger_sh6_vers_sh4(df)
+    totaux = df.groupby("hs6", observed=True)["valeur"].sum().sort_values(ascending=False)
+    return totaux.head(top_n).reset_index()
+
+
+def extraire_et_classer(annees: list[int], flux_val: str, etats: list[str],
+                         codes: list[str], devise_cible: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Pipeline complet réutilisable : extraction (CIMT+ISQ+Census) pour UN
+    SEUL flux, classement calculé sur une base TOUJOURS harmonisée en USD
+    (peu importe devise_cible), puis conversion vers la devise d'affichage
+    demandée -- factorise le motif déjà répété dans pages/rang_commercial.py
+    (Top25, et maintenant aussi catégories fixes) pour ne jamais oublier
+    l'étape d'harmonisation avant classement (voir bug SH4 7601, Illinois
+    2025 -- rang faux en comparant du CAD natif à du USD natif).
+
+    Retourne (df_resultat, df_pays) -- df_resultat porte les colonnes de
+    rang ET 'valeur_usd' (harmonisée, pour un tri de candidats toujours
+    valide en aval, voir _candidats_par_groupe)."""
+    df_provincial = extraire_provincial(annees, [flux_val], etats, codes)
+    df_provincial = substituer_isq(df_provincial, annees, [flux_val], etats, codes)
+    df_pays = extraire_pays_pour_etat(annees, [flux_val], etats, codes)
+
+    df_provincial_usd = d.convertir_devise(df_provincial, "USD")
+    df_pays_usd = d.convertir_devise(df_pays, "USD") if not df_pays.empty else df_pays
+    df_avec_rangs = calculer_rangs(df_provincial_usd, df_pays_usd)
+    colonnes_rang = ["Rang_vs_provinces", "Nb_provinces",
+                      "Rang_vs_tous_fournisseurs", "Nb_fournisseurs_total"]
+
+    if devise_cible == "USD":
+        df_resultat = df_avec_rangs
+        df_resultat["valeur_usd"] = df_avec_rangs["valeur"]
+        df_pays_final = df_pays_usd
+        if not df_pays_final.empty:
+            df_pays_final["valeur_usd"] = df_pays_usd["valeur"]
+    else:
+        df_resultat = d.convertir_devise(df_provincial, devise_cible)
+        if colonnes_rang[0] in df_avec_rangs.columns:
+            df_resultat[colonnes_rang] = df_avec_rangs[colonnes_rang]
+        df_resultat["valeur_usd"] = df_provincial_usd["valeur"]
+        df_pays_final = d.convertir_devise(df_pays, devise_cible) if not df_pays.empty else df_pays
+        if not df_pays_final.empty:
+            df_pays_final["valeur_usd"] = df_pays_usd["valeur"]
+
+    return df_resultat, df_pays_final
+
+
+def agreger_categorie(df_provincial: pd.DataFrame, df_pays: pd.DataFrame,
+                       nom_categorie: str = "TOTAL") -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Traite tous les codes d'une catégorie fixe (déjà filtrés en amont via
+    hs6_prefixes) comme UN SEUL pseudo-produit -- somme les valeurs par
+    entité (province ou pays), remplace hs6 par un placeholder constant.
+    Le résultat se réinjecte tel quel dans calculer_rangs() puis
+    construire_detail_produit() -- même logique, aucune duplication."""
+    if df_provincial.empty:
+        return df_provincial, df_pays
+
+    def _sommer(df: pd.DataFrame) -> pd.DataFrame:
+        # Colonnes à exclure de la clé de regroupement : hs6/valeur (objet
+        # de l'agrégation), et les colonnes de RANG déjà calculées PAR CODE
+        # par un appel antérieur à calculer_rangs()/extraire_et_classer() --
+        # elles diffèrent d'un code à l'autre par construction, donc les
+        # garder dans la clé empêcherait toute vraie agrégation (chaque
+        # ligne resterait son propre groupe). Elles seront de toute façon
+        # recalculées sur l'agrégat par le calculer_rangs() appelé ensuite.
+        colonnes_rang = ["Rang_vs_provinces", "Nb_provinces",
+                          "Rang_vs_tous_fournisseurs", "Nb_fournisseurs_total"]
+        exclues = {"hs6", "valeur", "valeur_usd", *colonnes_rang}
+        cles = [c for c in df.columns if c not in exclues]
+        sommes = {"valeur": "sum"}
+        if "valeur_usd" in df.columns:
+            sommes["valeur_usd"] = "sum"
+        out = df.groupby(cles, observed=True, as_index=False).agg(sommes)
+        out["hs6"] = nom_categorie
+        return out
+
+    dfp = _sommer(df_provincial)
+    dfy = _sommer(df_pays) if df_pays is not None and not df_pays.empty else df_pays
+    return dfp, dfy
+
+
+def classement_commerce_total(annees: list[int], etats_univers: list[str],
+                               etat_cible: str) -> dict:
+    """Classement du Québec dans son commerce TOTAL (tous produits, ISQ)
+    avec l'état visé, parmi l'univers complet d'états fourni (54 entités
+    ETAT_US décidé -- Porto Rico, Îles Vierges et "Autres États non
+    identifiés" INCLUS, pas de retrait à 51). Dénominateur de la part % =
+    somme de l'univers fourni (pas le commerce mondial du Québec).
+
+    Retourne {"DE": {...}, "TI": {...}, "TOTAL": {...}}, chaque valeur un
+    dict {valeur, rang, nb_total, part_pct}."""
+    df = d.extraire(sources=["ISQ"], annees=annees, flux=["DE", "TI"], partenaires_b=etats_univers)
+    if df.empty:
+        vide = {"valeur": 0.0, "rang": None, "nb_total": len(etats_univers), "part_pct": 0.0}
+        return {"DE": vide, "TI": vide, "TOTAL": vide}
+
+    df = _ajouter_province_et_partenaire_cimt(df)
+    totaux = df.groupby(["partenaire", "flux"], observed=True)["valeur"].sum().reset_index()
+
+    resultat: dict[str, dict] = {}
+    for flux_val in ("DE", "TI"):
+        sous = totaux[totaux["flux"] == flux_val].set_index("partenaire")["valeur"]
+        total_univers = sous.sum()
+        valeur_cible = float(sous.get(etat_cible, 0.0))
+        rang = int((sous > valeur_cible).sum()) + 1 if len(sous) else None
+        resultat[flux_val] = {
+            "valeur": valeur_cible, "rang": rang, "nb_total": len(etats_univers),
+            "part_pct": (valeur_cible / total_univers * 100) if total_univers else 0.0,
+        }
+
+    bilateral = totaux.groupby("partenaire")["valeur"].sum()
+    total_univers_bi = bilateral.sum()
+    valeur_cible_bi = float(bilateral.get(etat_cible, 0.0))
+    rang_bi = int((bilateral > valeur_cible_bi).sum()) + 1 if len(bilateral) else None
+    resultat["TOTAL"] = {
+        "valeur": valeur_cible_bi, "rang": rang_bi, "nb_total": len(etats_univers),
+        "part_pct": (valeur_cible_bi / total_univers_bi * 100) if total_univers_bi else 0.0,
+    }
+    return resultat

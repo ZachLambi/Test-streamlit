@@ -23,9 +23,9 @@ import pandas as pd
 
 import donnees as d
 from rang_commercial_logique import (
-    extraire_provincial, substituer_isq, extraire_pays_pour_etat,
     calculer_rangs, construire_detail_produit, construire_top10_produit,
-    resume_stats, top25_sh4_isq,
+    resume_stats, top25_sh4_isq, top_produits_isq, extraire_et_classer,
+    classement_commerce_total, agreger_categorie, CATEGORIES_FIXES,
 )
 from export import exporter_excel, exporter_csv
 
@@ -133,8 +133,8 @@ def _afficher_bloc_flux(flux_val: str, prefixe: str, df_affiche: pd.DataFrame,
                  "dans la barre latérale.")
         return
 
-    onglet_resume, onglet_detail, onglet_tendance, onglet_donnees = st.tabs(
-        ["📋 Top 25", "🔍 Détail par produit", "📈 Tendance", "📄 Données complètes"]
+    onglet_resume, onglet_detail, onglet_proportions, onglet_donnees = st.tabs(
+        ["📋 Top 25", "🔍 Détail par produit", "🥧 Proportions", "📄 Données complètes"]
     )
 
     # ── ONGLET RÉSUMÉ ──────────────────────────────────────────────────────
@@ -257,27 +257,22 @@ def _afficher_bloc_flux(flux_val: str, prefixe: str, df_affiche: pd.DataFrame,
                         unsafe_allow_html=True,
                     )
 
-    # ── ONGLET TENDANCE ───────────────────────────────────────────────────
-    with onglet_tendance:
-        if len(annees_selectionnees) <= 1:
-            st.info("Sélectionne une plage de plusieurs années dans la barre latérale "
-                    "pour voir l'évolution du rang dans le temps.")
-        elif df_detail_flux.empty:
+    # ── ONGLET PROPORTIONS (pie chart, remplace Tendance -- une seule année
+    # sélectionnable maintenant, un graphique d'évolution n'a plus de sens) ─
+    with onglet_proportions:
+        if df_detail_flux.empty:
             st.info("Aucun résultat à afficher.")
         else:
             import plotly.express as px
 
-            df_tendance = df_detail_flux.copy()
-            df_tendance["Partenaire"] = df_tendance["partenaire"].map(lambda c: noms_geo.get(c, c))
-            df_tendance["Série"] = df_tendance["Partenaire"] + " · SH4 " + df_tendance["hs6"]
-            fig = px.line(
-                df_tendance.sort_values("annee"), x="annee", y="rang_qc", color="Série",
-                markers=True,
-                labels={"annee": "Année", "rang_qc": "Rang du Québec (1 = meilleur)"},
-                title="Évolution du rang du Québec dans le temps",
+            df_pie = df_detail_flux.copy()
+            df_pie["Produit"] = "SH4 " + df_pie["hs6"].astype(str)
+            fig = px.pie(
+                df_pie, values="valeur_qc", names="Produit",
+                title="Proportion de chaque produit dans le flux Québec (Top 25)",
             )
-            fig.update_yaxes(autorange="reversed")  # rang 1 en haut, plus intuitif
-            st.plotly_chart(fig, width='stretch', key=f"rc_tendance_{prefixe}")
+            fig.update_traces(textposition="inside", textinfo="percent+label")
+            st.plotly_chart(fig, width='stretch', key=f"rc_pie_{prefixe}")
 
     # ── ONGLET DONNÉES COMPLÈTES ───────────────────────────────────────────
     with onglet_donnees:
@@ -317,18 +312,14 @@ with st.sidebar:
         )
 
     annee_min_dispo, annee_max_dispo = d.lister_annees_disponibles("CIMT")
+    annees_disponibles = list(range(annee_max_dispo, annee_min_dispo - 1, -1))  # plus récente d'abord
 
     with st.container(border=True):
         st.markdown("**Flux et période**")
-        if annee_min_dispo == annee_max_dispo:
-            st.caption(f"Année disponible : {annee_min_dispo}")
-            annees_selectionnees = [annee_min_dispo]
-        else:
-            annee_min, annee_max = st.slider(
-                "Années", min_value=annee_min_dispo, max_value=annee_max_dispo,
-                value=(annee_min_dispo, annee_max_dispo), key="rc_annees",
-            )
-            annees_selectionnees = list(range(annee_min, annee_max + 1))
+        annee_choisie = st.selectbox(
+            "Année", options=annees_disponibles, index=0, key="rc_annee",
+        )
+        annees_selectionnees = [annee_choisie]
 
         if mode == "Sélection personnalisée":
             flux_cochees = st.multiselect(
@@ -437,96 +428,73 @@ if lancer:
                          f"{', '.join(codes_par_flux['DE']) or '—'}")
                 st.write(f"Client (TI) : {len(codes_par_flux['TI'])} codes retenus : "
                          f"{', '.join(codes_par_flux['TI']) or '—'}")
-
-                # Deux extractions SÉPARÉES, chacune restreinte à ses 25
-                # codes -- jamais les deux flux sur l'union des codes (voir
-                # docstring de top25_sh4_isq pour le bug que ça évite).
-                st.write("Ventilation provinciale (CIMT) et fournisseurs étrangers (Census)...")
-                morceaux_provincial, morceaux_pays = [], []
-                for flux_val in ("DE", "TI"):
-                    codes_flux = codes_par_flux[flux_val]
-                    if not codes_flux:
-                        continue
-                    dfp = extraire_provincial(
-                        annees_selectionnees, [flux_val], etats_selectionnes, codes_flux
-                    )
-                    dfp = substituer_isq(
-                        dfp, annees_selectionnees, [flux_val], etats_selectionnes, codes_flux
-                    )
-                    dfy = extraire_pays_pour_etat(
-                        annees_selectionnees, [flux_val], etats_selectionnes, codes_flux
-                    )
-                    morceaux_provincial.append(dfp)
-                    morceaux_pays.append(dfy)
-                df_provincial = (pd.concat(morceaux_provincial, ignore_index=True)
-                                  if morceaux_provincial else pd.DataFrame())
-                df_pays = (pd.concat(morceaux_pays, ignore_index=True)
-                           if morceaux_pays else pd.DataFrame())
+                flux_a_extraire = {"DE": codes_par_flux["DE"], "TI": codes_par_flux["TI"]}
             else:
-                st.write("Ventilation provinciale (CIMT)...")
-                df_provincial = extraire_provincial(
-                    annees_selectionnees, flux_cochees, etats_selectionnes, codes_sh4_selectionnes
-                )
-                st.write("Substitution des valeurs Québec (ISQ)...")
-                df_provincial = substituer_isq(
-                    df_provincial, annees_selectionnees, flux_cochees,
-                    etats_selectionnes, codes_sh4_selectionnes
-                )
-                st.write("Fournisseurs étrangers de l'état visé (Census)...")
-                df_pays = extraire_pays_pour_etat(
-                    annees_selectionnees, flux_cochees, etats_selectionnes, codes_sh4_selectionnes
-                )
+                flux_a_extraire = {f: codes_sh4_selectionnes for f in flux_cochees}
 
-            st.write("Calcul des classements...")
-            # CORRECTIF (22 juillet 2026) -- calculer_rangs() comparait
-            # jusqu'ici des valeurs NATIVES non harmonisées : CIMT/ISQ
-            # (natif CAD) directement contre Census (natif USD), SANS
-            # conversion, avant que la devise choisie par l'utilisateur ne
-            # soit appliquée. Résultat : un rang faux dès que la comparaison
-            # traversait les deux devises (ex. SH4 7601, Illinois 2025 --
-            # le Québec affiché #1 alors qu'il était #2, les Émirats arabes
-            # unis étant en USD natif jamais convertis avant la comparaison
-            # avec le Québec en CAD natif). On harmonise donc TOUJOURS en
-            # USD pour le calcul des rangs, peu importe la devise
-            # d'affichage choisie (même "Native (par source)") -- un rang
-            # n'a de sens que sur des valeurs comparables.
-            df_provincial_usd = d.convertir_devise(df_provincial, "USD")
-            df_pays_usd = d.convertir_devise(df_pays, "USD") if not df_pays.empty else df_pays
-            df_avec_rangs = calculer_rangs(df_provincial_usd, df_pays_usd)
-            colonnes_rang = ["Rang_vs_provinces", "Nb_provinces",
-                              "Rang_vs_tous_fournisseurs", "Nb_fournisseurs_total"]
-
-            # Devise d'AFFICHAGE demandée (USD ou CAD seulement -- pas de
-            # mode "Native", voir sidebar) -- appliquée après coup, sur les
-            # valeurs seulement, jamais sur les rangs (déjà corrects
-            # ci-dessus). "valeur_usd" (harmonisée) est conservée dans
-            # chaque branche pour que le TRI des candidats dans
-            # construire_top10_produit/construire_detail_produit reste
-            # toujours basé sur une comparaison valide.
-            if devise_rc == "USD":
-                df_resultat = df_avec_rangs
-                df_resultat["valeur_usd"] = df_avec_rangs["valeur"]
-                df_pays = df_pays_usd
-                if not df_pays.empty:
-                    df_pays["valeur_usd"] = df_pays_usd["valeur"]
-            else:  # CAD
-                df_resultat = d.convertir_devise(df_provincial, devise_rc)
-                if colonnes_rang[0] in df_avec_rangs.columns:
-                    df_resultat[colonnes_rang] = df_avec_rangs[colonnes_rang]
-                df_resultat["valeur_usd"] = df_provincial_usd["valeur"]
-                df_pays = d.convertir_devise(df_pays, devise_rc) if not df_pays.empty else df_pays
-                if not df_pays.empty:
-                    df_pays["valeur_usd"] = df_pays_usd["valeur"]
+            # Une extraction SÉPARÉE par sens de flux, chacune restreinte à
+            # ses propres codes -- jamais les deux flux sur la même liste
+            # (voir docstring de top25_sh4_isq pour le bug que ça évite).
+            # extraire_et_classer() gère aussi l'harmonisation de devise
+            # avant classement (voir son docstring).
+            st.write("Ventilation provinciale (CIMT), substitution ISQ, "
+                     "fournisseurs étrangers (Census), classement...")
+            morceaux_provincial, morceaux_pays = [], []
+            for flux_val, codes_flux in flux_a_extraire.items():
+                if not codes_flux:
+                    continue
+                dfp, dfy = extraire_et_classer(
+                    annees_selectionnees, flux_val, etats_selectionnes, codes_flux, devise_rc
+                )
+                morceaux_provincial.append(dfp)
+                morceaux_pays.append(dfy)
+            df_resultat = (pd.concat(morceaux_provincial, ignore_index=True)
+                           if morceaux_provincial else pd.DataFrame())
+            df_pays = (pd.concat(morceaux_pays, ignore_index=True)
+                       if morceaux_pays else pd.DataFrame())
 
             st.write("Construction du détail par produit...")
             df_detail = construire_detail_produit(df_resultat, df_pays, noms_geo)
             df_top10 = construire_top10_produit(df_resultat, df_pays, noms_geo)
+
+            # ── VUE D'ENSEMBLE -- indépendante de la sélection Top25/
+            # personnalisée en cours, toujours "tous produits" ISQ pour le
+            # premier état sélectionné (voir plan_action_rang_commercial.txt
+            # section 4). ────────────────────────────────────────────────
+            st.write("Vue d'ensemble : top 5 tous produits, classement "
+                     "inter-états, catégories fixes...")
+            etat_ve = etats_selectionnes[0]
+            top5 = {
+                "DE": top_produits_isq(annees_selectionnees, etat_ve, "DE", 5),
+                "TI": top_produits_isq(annees_selectionnees, etat_ve, "TI", 5),
+            }
+            etats_univers = [c for c, t in d.lister_entites_cote("CIMT", "b") if t == "ETAT_US"]
+            classement_total = classement_commerce_total(annees_selectionnees, etats_univers, etat_ve)
+
+            categories_resultat: dict[str, dict[str, pd.DataFrame]] = {}
+            for nom_cat, codes_cat in CATEGORIES_FIXES.items():
+                categories_resultat[nom_cat] = {}
+                for flux_val in ("DE", "TI"):
+                    dfp_cat, dfy_cat = extraire_et_classer(
+                        annees_selectionnees, flux_val, [etat_ve], codes_cat, devise_rc
+                    )
+                    df_detail_cat = construire_detail_produit(dfp_cat, dfy_cat, noms_geo)
+                    dfp_agg, dfy_agg = agreger_categorie(dfp_cat, dfy_cat, f"Total {nom_cat}")
+                    df_res_agg = calculer_rangs(dfp_agg, dfy_agg)
+                    df_total_cat = construire_detail_produit(df_res_agg, dfy_agg, noms_geo)
+                    categories_resultat[nom_cat][flux_val] = pd.concat(
+                        [df_detail_cat, df_total_cat], ignore_index=True
+                    )
 
             statut.update(label="Extraction terminée", state="complete")
 
         st.session_state[cle_session] = df_resultat
         st.session_state["rc_df_detail"] = df_detail
         st.session_state["rc_df_top10"] = df_top10
+        st.session_state["rc_top5"] = top5
+        st.session_state["rc_classement_total"] = classement_total
+        st.session_state["rc_categories"] = categories_resultat
+        st.session_state["rc_etat_ve"] = etat_ve
         # Gèle la devise utilisée POUR CETTE EXTRACTION -- ne doit plus
         # bouger tant qu'une nouvelle extraction n'est pas lancée, même si
         # le widget "rc_devise" change entre-temps (voir usage de
@@ -536,7 +504,92 @@ if lancer:
 df_affiche = st.session_state.get(cle_session, pd.DataFrame())
 df_detail = st.session_state.get("rc_df_detail", pd.DataFrame())
 df_top10 = st.session_state.get("rc_df_top10", pd.DataFrame())
+top5 = st.session_state.get("rc_top5", {})
+classement_total = st.session_state.get("rc_classement_total", {})
+categories_resultat = st.session_state.get("rc_categories", {})
+etat_ve = st.session_state.get("rc_etat_ve")
 devise_resultat = st.session_state.get("rc_devise_resultat", "USD")
+
+
+def _afficher_vue_ensemble(top5: dict, classement_total: dict, categories_resultat: dict,
+                            etat_ve: str, unite: str, noms_geo: dict) -> None:
+    """Vue d'ensemble -- indépendante de la sélection Top25/personnalisée en
+    cours, toujours 'tous produits' (ISQ) pour le premier état sélectionné.
+    Top 5 export/import + commerce total TOUJOURS affichés ensemble (pas
+    scindés Fournisseur/Client) ; seules les catégories fixes changent de
+    sens, via leurs propres sous-onglets."""
+    if not top5 or not classement_total:
+        st.info("Configure tes filtres dans la barre latérale, puis clique **Extraire**.")
+        return
+
+    nom_etat = noms_geo.get(etat_ve, etat_ve)
+    st.subheader(f"Commerce Québec ↔ {nom_etat} — tous produits")
+
+    col_exp, col_imp = st.columns(2)
+    for col, cle_flux, titre_bloc, cle_container in [
+        (col_exp, "DE", "🚚 Top 5 exportés QC → état", "rc_ve_top5_de"),
+        (col_imp, "TI", "🛒 Top 5 importés QC ← état", "rc_ve_top5_ti"),
+    ]:
+        with col:
+            with st.container(key=cle_container, border=True):
+                st.markdown(f"**{titre_bloc}**")
+                df5 = top5.get(cle_flux)
+                if df5 is None or df5.empty:
+                    st.info("Aucune donnée.")
+                else:
+                    lignes5 = [
+                        {"rang": i + 1, "titre": f"SH4 {r.hs6}", "valeur": r.valeur}
+                        for i, r in enumerate(df5.itertuples())
+                    ]
+                    st.markdown(_html_leaderboard(lignes5, unite, "Produit"), unsafe_allow_html=True)
+
+    with st.container(key="rc_ve_total", border=True):
+        st.markdown(f"**Commerce total avec {nom_etat}** — tous produits, "
+                    "parmi les 54 juridictions américaines (50 états + D.C. "
+                    "+ Porto Rico + Îles Vierges + Autres États non identifiés)")
+        c1, c2, c3 = st.columns(3)
+        for col, cle_flux, label in [
+            (c1, "DE", "Exportations QC → état"), (c2, "TI", "Importations QC ← état"),
+            (c3, "TOTAL", "Commerce bilatéral total"),
+        ]:
+            info = classement_total.get(cle_flux, {})
+            with col:
+                st.metric(label, f"{info.get('valeur', 0) / 1e9:,.2f} G$ {unite}")
+                rang, nb_total = info.get("rang"), info.get("nb_total", 54)
+                st.caption(f"Rang #{rang}/{nb_total} · {info.get('part_pct', 0):.2f} % du total US")
+
+    st.divider()
+    st.markdown("### Catégories fixes")
+    st.caption("Seule section de cette page qui change de sens selon l'onglet choisi.")
+    onglet_fourn_cat, onglet_client_cat = st.tabs(["🚚 Fournisseur", "🛒 Client"])
+    for onglet_cat, flux_val in [(onglet_fourn_cat, "DE"), (onglet_client_cat, "TI")]:
+        with onglet_cat:
+            for nom_cat in CATEGORIES_FIXES:
+                df_cat = categories_resultat.get(nom_cat, {}).get(flux_val, pd.DataFrame())
+                with st.container(key=f"rc_ve_cat_{nom_cat}_{flux_val}", border=True):
+                    st.markdown(f"**{nom_cat}**")
+                    if df_cat.empty:
+                        st.info("Aucun résultat.")
+                        continue
+                    est_total_mask = df_cat["hs6"].astype(str).str.startswith("Total ")
+                    df_codes = df_cat[~est_total_mask].sort_values("rang_qc")
+                    df_total_ligne = df_cat[est_total_mask]
+                    df_ordonne = pd.concat([df_codes, df_total_ligne], ignore_index=True)
+
+                    lignes_cat = []
+                    for _, r in df_ordonne.iterrows():
+                        est_total = str(r["hs6"]).startswith("Total ")
+                        titre = r["hs6"] if est_total else f"SH4 {r['hs6']}"
+                        sous_titre = (f"1er : {r['top_nom']} ({r['top_valeur']:,.0f} {unite}) "
+                                      f"· {r['nb_total']} au total")
+                        lignes_cat.append({
+                            "rang": r["rang_qc"], "titre": titre, "valeur": r["valeur_qc"],
+                            "sous_titre": sous_titre, "highlight": est_total or r["rang_qc"] == 1,
+                        })
+                    st.markdown(
+                        _html_leaderboard(lignes_cat, unite, "Produit"), unsafe_allow_html=True
+                    )
+
 
 if df_affiche.empty:
     st.info("Configure tes filtres dans la barre latérale, puis clique **Extraire**.")
@@ -544,9 +597,10 @@ else:
     noms_geo = d.referentiel_geo()
     unite = devise_resultat
 
-    onglet_fournisseur, onglet_client = st.tabs([
+    onglet_fournisseur, onglet_client, onglet_vue_ensemble = st.tabs([
         "🚚 Fournisseur — le Québec vend à l'état (DE)",
         "🛒 Client — le Québec achète de l'état (TI)",
+        "📊 Vue d'ensemble",
     ])
 
     with onglet_fournisseur:
@@ -555,3 +609,6 @@ else:
     with onglet_client:
         _afficher_bloc_flux("TI", "ti", df_affiche, df_detail, df_top10, unite,
                              annees_selectionnees, noms_geo, devise_resultat)
+    with onglet_vue_ensemble:
+        _afficher_vue_ensemble(top5, classement_total, categories_resultat,
+                                etat_ve, unite, noms_geo)
