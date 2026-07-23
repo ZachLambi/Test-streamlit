@@ -608,21 +608,36 @@ def _afficher_vue_ensemble(top5: dict, classement_total: dict, categories_result
                     est_total_mask = df_cat["hs6"].astype(str).str.startswith("Total ")
                     df_codes = df_cat[~est_total_mask].sort_values("rang_qc")
                     df_total_ligne = df_cat[est_total_mask]
-                    df_ordonne = pd.concat([df_codes, df_total_ligne], ignore_index=True)
 
-                    lignes_cat = []
-                    for _, r in df_ordonne.iterrows():
-                        est_total = str(r["hs6"]).startswith("Total ")
+                    def _ligne_leaderboard(r: pd.Series, est_total: bool) -> dict:
                         titre = r["hs6"] if est_total else f"SH4 {r['hs6']}"
                         sous_titre = (f"1er : {r['top_nom']} ({r['top_valeur']:,.0f} {unite}) "
                                       f"· {r['nb_total']} au total")
-                        lignes_cat.append({
+                        return {
                             "rang": r["rang_qc"], "titre": titre, "valeur": r["valeur_qc"],
-                            "sous_titre": sous_titre, "highlight": est_total or r["rang_qc"] == 1,
-                        })
-                    st.markdown(
-                        _html_leaderboard(lignes_cat, unite, "Produit"), unsafe_allow_html=True
-                    )
+                            "sous_titre": sous_titre,
+                            # Highlight uniquement si le Québec est #1 -- pas
+                            # un traitement spécial pour la ligne Total (bug
+                            # corrigé : elle ressortait en bleu même quand le
+                            # Québec n'était pas premier, ex. Finlande #1).
+                            "highlight": r["rang_qc"] == 1,
+                        }
+
+                    if df_total_ligne.empty:
+                        st.info("Aucun total calculable.")
+                    else:
+                        lignes_total = [_ligne_leaderboard(r, True) for _, r in df_total_ligne.iterrows()]
+                        st.markdown(
+                            _html_leaderboard(lignes_total, unite, "Catégorie"), unsafe_allow_html=True
+                        )
+
+                    if not df_codes.empty:
+                        with st.popover("🔍 Détail par produit", width='stretch'):
+                            lignes_detail = [_ligne_leaderboard(r, False) for _, r in df_codes.iterrows()]
+                            st.markdown(
+                                _html_leaderboard(lignes_detail, unite, "Produit"),
+                                unsafe_allow_html=True,
+                            )
 
 
 if df_affiche.empty:
