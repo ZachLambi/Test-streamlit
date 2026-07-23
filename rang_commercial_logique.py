@@ -58,6 +58,45 @@ def _agreger_sh6_vers_sh4(df: pd.DataFrame) -> pd.DataFrame:
     return df.groupby(colonnes_groupe, as_index=False, observed=True)["valeur"].sum()
 
 
+def _agreger_vers_codes(df: pd.DataFrame, codes_demandes: list[str] | None) -> pd.DataFrame:
+    """Agrège les lignes SH6 au niveau EXACT des codes demandés (2, 4 ou 6
+    chiffres) -- PAS toujours SH4. Si l'utilisateur (Sélection
+    personnalisée) ou une catégorie fixe demande un code SH2 (ex. '44'
+    pour Foresterie), toutes ses lignes SH6 sous-jacentes sont fusionnées
+    en UNE SEULE ligne '44' -- pas éclatées en plusieurs lignes SH4 comme
+    avant, ce qui faisait apparaître chaque sous-code séparément dans les
+    classements/tableaux alors que l'utilisateur avait demandé une
+    agrégation au niveau SH2.
+
+    CORRECTIF (22 juillet 2026) -- si aucun code n'est fourni (cas Top25
+    preset, qui construit toujours ses propres codes SH4 précis via
+    top25_sh4_isq, jamais de sélection utilisateur ici), retombe sur le
+    comportement SH4 historique (_agreger_sh6_vers_sh4) -- comportement
+    inchangé pour ce chemin."""
+    if df.empty:
+        return df
+    if not codes_demandes:
+        return _agreger_sh6_vers_sh4(df)
+
+    df = df.copy()
+    # Le code le plus SPÉCIFIQUE (le plus long) d'abord, pour le cas où
+    # deux codes demandés seraient l'un préfixe de l'autre (ex. '84' et
+    # '8411' en même temps) -- la ligne va au code le plus précis, pas au
+    # plus large.
+    codes_tries = sorted(set(codes_demandes), key=len, reverse=True)
+
+    def _code_correspondant(hs6: str) -> str:
+        for code in codes_tries:
+            if hs6.startswith(code):
+                return code
+        return hs6[:4]  # filet de sécurité -- ne devrait pas arriver si
+        # hs6_prefixes (déjà utilisé pour la requête SQL) est cohérent
+
+    df["hs6"] = df["hs6"].astype(str).map(_code_correspondant)
+    colonnes_groupe = [c for c in df.columns if c != "valeur"]
+    return df.groupby(colonnes_groupe, as_index=False, observed=True)["valeur"].sum()
+
+
 def _ajouter_province_et_partenaire_cimt(df: pd.DataFrame) -> pd.DataFrame:
     """CIMT : état = côté B (partenaire). DE/TE -> partenaire=destination,
     province=origine. TI -> partenaire=origine, province=destination."""
@@ -89,7 +128,7 @@ def extraire_provincial(annees: list[int], flux: list[str], etats_us: list[str],
         sources=["CIMT"], annees=annees, flux=flux,
         partenaires_b=etats_us, hs6_prefixes=codes_sh4,
     )
-    df = _agreger_sh6_vers_sh4(df)
+    df = _agreger_vers_codes(df, codes_sh4)
     return _ajouter_province_et_partenaire_cimt(df)
 
 
@@ -103,7 +142,7 @@ def substituer_isq(df_provincial: pd.DataFrame, annees: list[int], flux: list[st
         sources=["ISQ"], annees=annees, flux=flux,
         partenaires_b=etats_us, hs6_prefixes=codes_sh4,
     )
-    df_isq = _agreger_sh6_vers_sh4(df_isq)
+    df_isq = _agreger_vers_codes(df_isq, codes_sh4)
     df_isq = _ajouter_province_et_partenaire_cimt(df_isq)
     if df_isq.empty:
         return df_provincial
@@ -152,7 +191,7 @@ def extraire_pays_pour_etat(annees: list[int], flux: list[str], etats_us: list[s
     # Filtre agnostique au sens du flux -- Canada peut apparaître en
     # origine (TE) ou destination (TI) côté Census.
     df = df[(df.get("origine") != CODE_CANADA_CENSUS) & (df.get("destination") != CODE_CANADA_CENSUS)]
-    df = _agreger_sh6_vers_sh4(df)
+    df = _agreger_vers_codes(df, codes_sh4)
     df = _ajouter_partenaire_census(df)
     df["flux"] = df["flux"].map(lambda f: correspondance_census_vers_cimt.get(f, f))
     return df
@@ -388,14 +427,19 @@ CATEGORIES_FIXES: dict[str, list[str]] = {
 }
 
 
-def top_produits_isq(annees: list[int], etat: str, flux: str, top_n: int = 5) -> pd.DataFrame:
+def top_produits_isq(annees: list[int], etat: str, flux: str, devise_cible: str,
+                      top_n: int = 5) -> pd.DataFrame:
     """Top N produits SH4 (TOUS produits confondus, aucune restriction de
     code) pour le commerce du Québec avec l'état visé, sur UN SEUL sens de
     flux -- utilisé pour le Top 5 de la Vue d'ensemble, indépendamment de
-    toute sélection Top25/personnalisée en cours. Colonnes : hs6, valeur."""
+    toute sélection Top25/personnalisée en cours. Colonnes : hs6, valeur
+    (déjà dans devise_cible -- ce niveau de ce module compare toujours des
+    valeurs ISQ entre elles, une seule source/devise native, donc la
+    conversion ne change jamais le TOP N retenu, seulement l'affichage)."""
     df = d.extraire(sources=["ISQ"], annees=annees, flux=[flux], partenaires_b=[etat])
     if df.empty:
         return pd.DataFrame(columns=["hs6", "valeur"])
+    df = d.convertir_devise(df, devise_cible)
     df = _agreger_sh6_vers_sh4(df)
     totaux = df.groupby("hs6", observed=True)["valeur"].sum().sort_values(ascending=False)
     return totaux.head(top_n).reset_index()
@@ -477,12 +521,15 @@ def agreger_categorie(df_provincial: pd.DataFrame, df_pays: pd.DataFrame,
 
 
 def classement_commerce_total(annees: list[int], etats_univers: list[str],
-                               etat_cible: str) -> dict:
+                               etat_cible: str, devise_cible: str) -> dict:
     """Classement du Québec dans son commerce TOTAL (tous produits, ISQ)
     avec l'état visé, parmi l'univers complet d'états fourni (54 entités
     ETAT_US décidé -- Porto Rico, Îles Vierges et "Autres États non
     identifiés" INCLUS, pas de retrait à 51). Dénominateur de la part % =
-    somme de l'univers fourni (pas le commerce mondial du Québec).
+    somme de l'univers fourni (pas le commerce mondial du Québec). Le rang
+    et la part % sont invariants à la devise (ratio/comparaison uniforme,
+    une seule source ISQ) -- seule la VALEUR affichée (G$) a besoin de la
+    conversion, appliquée ici.
 
     Retourne {"DE": {...}, "TI": {...}, "TOTAL": {...}}, chaque valeur un
     dict {valeur, rang, nb_total, part_pct}."""
@@ -491,6 +538,7 @@ def classement_commerce_total(annees: list[int], etats_univers: list[str],
         vide = {"valeur": 0.0, "rang": None, "nb_total": len(etats_univers), "part_pct": 0.0}
         return {"DE": vide, "TI": vide, "TOTAL": vide}
 
+    df = d.convertir_devise(df, devise_cible)
     df = _ajouter_province_et_partenaire_cimt(df)
     totaux = df.groupby(["partenaire", "flux"], observed=True)["valeur"].sum().reset_index()
 

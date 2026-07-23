@@ -465,11 +465,11 @@ if lancer:
                      "inter-états, catégories fixes...")
             etat_ve = etats_selectionnes[0]
             top5 = {
-                "DE": top_produits_isq(annees_selectionnees, etat_ve, "DE", 5),
-                "TI": top_produits_isq(annees_selectionnees, etat_ve, "TI", 5),
+                "DE": top_produits_isq(annees_selectionnees, etat_ve, "DE", devise_rc, 5),
+                "TI": top_produits_isq(annees_selectionnees, etat_ve, "TI", devise_rc, 5),
             }
             etats_univers = [c for c, t in d.lister_entites_cote("CIMT", "b") if t == "ETAT_US"]
-            classement_total = classement_commerce_total(annees_selectionnees, etats_univers, etat_ve)
+            classement_total = classement_commerce_total(annees_selectionnees, etats_univers, etat_ve, devise_rc)
 
             categories_resultat: dict[str, dict[str, pd.DataFrame]] = {}
             for nom_cat, codes_cat in CATEGORIES_FIXES.items():
