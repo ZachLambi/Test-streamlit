@@ -632,7 +632,7 @@ def _afficher_vue_ensemble(top5: dict, classement_total: dict, categories_result
                         )
 
                     if not df_codes.empty:
-                        with st.popover("🔍 Détail par produit", width='stretch'):
+                        with st.expander("🔍 Détail par produit"):
                             lignes_detail = [_ligne_leaderboard(r, False) for _, r in df_codes.iterrows()]
                             st.markdown(
                                 _html_leaderboard(lignes_detail, unite, "Produit"),
