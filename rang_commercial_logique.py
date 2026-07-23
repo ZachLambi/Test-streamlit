@@ -385,10 +385,12 @@ def resume_stats(df_detail_produit: pd.DataFrame) -> dict:
     }
 
 
-def top25_sh4_isq(annees: list[int], etat: str) -> dict[str, list[str]]:
+def top25_sh4_isq(annees: list[int], etats: list[str]) -> dict[str, list[str]]:
     """Détermine, SÉPARÉMENT, les 25 codes SH4 les plus importants pour le
-    commerce du Québec avec l'état visé -- un top 25 PAR SENS DE FLUX, pas
-    un seul ensemble fusionné.
+    commerce du Québec avec l'état (ou le GROUPE d'états, ex. Maine+Vermont
+    -- d.extraire somme naturellement toutes les lignes correspondantes
+    quand plusieurs états sont passés, avant même agreger_geographie) visé
+    -- un top 25 PAR SENS DE FLUX, pas un seul ensemble fusionné.
 
     CORRECTIF (22 juillet 2026) -- une v1 fusionnait les deux top25 (TE et
     TI) en un seul set() avant de les retourner, ce qui faisait perdre
@@ -410,7 +412,7 @@ def top25_sh4_isq(annees: list[int], etat: str) -> dict[str, list[str]]:
     Retourne {"DE": [...≤25 codes...], "TI": [...≤25 codes...]}."""
     resultat: dict[str, list[str]] = {}
     for flux in ("DE", "TI"):
-        df = d.extraire(sources=["ISQ"], annees=annees, flux=[flux], partenaires_b=[etat])
+        df = d.extraire(sources=["ISQ"], annees=annees, flux=[flux], partenaires_b=etats)
         if df.empty:
             resultat[flux] = []
             continue
@@ -427,16 +429,21 @@ CATEGORIES_FIXES: dict[str, list[str]] = {
 }
 
 
-def top_produits_isq(annees: list[int], etat: str, flux: str, devise_cible: str,
+def top_produits_isq(annees: list[int], etats: list[str], flux: str, devise_cible: str,
                       top_n: int = 5) -> pd.DataFrame:
     """Top N produits SH4 (TOUS produits confondus, aucune restriction de
-    code) pour le commerce du Québec avec l'état visé, sur UN SEUL sens de
-    flux -- utilisé pour le Top 5 de la Vue d'ensemble, indépendamment de
-    toute sélection Top25/personnalisée en cours. Colonnes : hs6, valeur
-    (déjà dans devise_cible -- ce niveau de ce module compare toujours des
-    valeurs ISQ entre elles, une seule source/devise native, donc la
-    conversion ne change jamais le TOP N retenu, seulement l'affichage)."""
-    df = d.extraire(sources=["ISQ"], annees=annees, flux=[flux], partenaires_b=[etat])
+    code) pour le commerce du Québec avec l'état (ou GROUPE d'états, ex.
+    Maine+Vermont) visé, sur UN SEUL sens de flux -- utilisé pour le Top 5
+    de la Vue d'ensemble, indépendamment de toute sélection Top25/
+    personnalisée en cours. Colonnes : hs6, valeur (déjà dans devise_cible).
+
+    Groupe : d.extraire(partenaires_b=etats) inclut toutes les lignes de
+    TOUS les états de la liste, et le groupby('hs6') qui suit somme ensuite
+    tout ensemble SANS distinguer l'état d'origine -- le total combiné du
+    groupe est donc déjà ce que ce groupby produit nativement, aucun code
+    d'agrégation géographique séparé n'est nécessaire ici (contrairement à
+    calculer_rangs, qui lui distingue les états via 'partenaire')."""
+    df = d.extraire(sources=["ISQ"], annees=annees, flux=[flux], partenaires_b=etats)
     if df.empty:
         return pd.DataFrame(columns=["hs6", "valeur"])
     df = d.convertir_devise(df, devise_cible)
@@ -445,8 +452,50 @@ def top_produits_isq(annees: list[int], etat: str, flux: str, devise_cible: str,
     return totaux.head(top_n).reset_index()
 
 
+def agreger_geographie(df_provincial: pd.DataFrame, df_pays: pd.DataFrame,
+                        nom_groupe: str, flux_val: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Traite plusieurs états visés (ex. Maine + Vermont) comme UN SEUL
+    groupe -- somme les valeurs par (province/pays, hs6, année, flux),
+    remplace 'partenaire' par le nom du groupe. Miroir de
+    agreger_categorie() (qui collapse hs6 au lieu de partenaire).
+
+    Subtilité : 'partenaire' n'est qu'une COPIE d'une colonne brute
+    (origine ou destination selon le sens du flux -- voir
+    _ajouter_province_et_partenaire_cimt / _ajouter_partenaire_census).
+    Exclure seulement 'partenaire' de la clé de regroupement NE SUFFIT PAS
+    -- la colonne brute sous-jacente, elle, varie toujours d'un état à
+    l'autre et empêcherait toute vraie fusion. Il faut exclure LA MÊME
+    colonne brute que celle utilisée pour construire 'partenaire',
+    cohérent avec 'colonne_pays' dans _candidats_par_groupe :
+      CIMT/ISQ  : partenaire = destination (DE) / origine (TI)
+      Census    : partenaire = destination (DE, ex Census-TI) /
+                  origine (TI, ex Census-TE)"""
+    if df_provincial.empty:
+        return df_provincial, df_pays
+
+    colonnes_rang = ["Rang_vs_provinces", "Nb_provinces",
+                      "Rang_vs_tous_fournisseurs", "Nb_fournisseurs_total"]
+    colonne_etat = "destination" if flux_val == "DE" else "origine"
+
+    def _sommer(df: pd.DataFrame) -> pd.DataFrame:
+        exclues = {"partenaire", "valeur", "valeur_usd", colonne_etat, *colonnes_rang}
+        cles = [c for c in df.columns if c not in exclues]
+        sommes = {"valeur": "sum"}
+        if "valeur_usd" in df.columns:
+            sommes["valeur_usd"] = "sum"
+        out = df.groupby(cles, observed=True, as_index=False).agg(sommes)
+        out["partenaire"] = nom_groupe
+        out[colonne_etat] = nom_groupe
+        return out
+
+    dfp = _sommer(df_provincial)
+    dfy = _sommer(df_pays) if df_pays is not None and not df_pays.empty else df_pays
+    return dfp, dfy
+
+
 def extraire_et_classer(annees: list[int], flux_val: str, etats: list[str],
-                         codes: list[str], devise_cible: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+                         codes: list[str], devise_cible: str,
+                         nom_groupe_etats: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Pipeline complet réutilisable : extraction (CIMT+ISQ+Census) pour UN
     SEUL flux, classement calculé sur une base TOUJOURS harmonisée en USD
     (peu importe devise_cible), puis conversion vers la devise d'affichage
@@ -455,12 +504,22 @@ def extraire_et_classer(annees: list[int], flux_val: str, etats: list[str],
     l'étape d'harmonisation avant classement (voir bug SH4 7601, Illinois
     2025 -- rang faux en comparant du CAD natif à du USD natif).
 
+    Si nom_groupe_etats est fourni ET que etats contient plus d'un état
+    (ex. Maine + Vermont), les états sont d'abord FUSIONNÉS en un seul
+    groupe (agreger_geographie) AVANT tout calcul de rang -- l'analyse
+    porte ensuite sur le groupe comme s'il s'agissait d'un seul état,
+    exactement le même principe que les catégories fixes de produits
+    (fusion d'abord, classement standard appliqué après sur le résultat).
+
     Retourne (df_resultat, df_pays) -- df_resultat porte les colonnes de
     rang ET 'valeur_usd' (harmonisée, pour un tri de candidats toujours
     valide en aval, voir _candidats_par_groupe)."""
     df_provincial = extraire_provincial(annees, [flux_val], etats, codes)
     df_provincial = substituer_isq(df_provincial, annees, [flux_val], etats, codes)
     df_pays = extraire_pays_pour_etat(annees, [flux_val], etats, codes)
+
+    if nom_groupe_etats and len(etats) > 1:
+        df_provincial, df_pays = agreger_geographie(df_provincial, df_pays, nom_groupe_etats, flux_val)
 
     df_provincial_usd = d.convertir_devise(df_provincial, "USD")
     df_pays_usd = d.convertir_devise(df_pays, "USD") if not df_pays.empty else df_pays
@@ -521,18 +580,31 @@ def agreger_categorie(df_provincial: pd.DataFrame, df_pays: pd.DataFrame,
 
 
 def classement_commerce_total(annees: list[int], etats_univers: list[str],
-                               etat_cible: str, devise_cible: str) -> dict:
+                               etat_cible: str | list[str], devise_cible: str) -> dict:
     """Classement du Québec dans son commerce TOTAL (tous produits, ISQ)
-    avec l'état visé, parmi l'univers complet d'états fourni (54 entités
-    ETAT_US décidé -- Porto Rico, Îles Vierges et "Autres États non
-    identifiés" INCLUS, pas de retrait à 51). Dénominateur de la part % =
-    somme de l'univers fourni (pas le commerce mondial du Québec). Le rang
-    et la part % sont invariants à la devise (ratio/comparaison uniforme,
-    une seule source ISQ) -- seule la VALEUR affichée (G$) a besoin de la
-    conversion, appliquée ici.
+    avec l'état (ou GROUPE d'états, ex. Maine+Vermont) visé, parmi
+    l'univers complet d'états fourni (54 entités ETAT_US décidé -- Porto
+    Rico, Îles Vierges et "Autres États non identifiés" INCLUS, pas de
+    retrait à 51). Dénominateur de la part % = somme de l'univers fourni
+    (pas le commerce mondial du Québec). Le rang et la part % sont
+    invariants à la devise (ratio/comparaison uniforme, une seule source
+    ISQ) -- seule la VALEUR affichée (G$) a besoin de la conversion,
+    appliquée ici.
+
+    GROUPE (etat_cible = liste de plus d'un état) : la valeur est la somme
+    des membres, et la part % reste calculable (part du groupe dans le
+    total des 54) -- mais le RANG devient None (N/A) : un groupe combiné
+    n'est structurellement pas comparable un-contre-un aux 54 entités
+    individuelles, ce serait une réponse à une question qu'on ne pose pas
+    vraiment ("le groupe est-il plus gros qu'un état seul ?" n'a pas de
+    réponse utile). Rien à comparer, mais rien n'empêche de savoir quelle
+    part du marché américain total le groupe représente.
 
     Retourne {"DE": {...}, "TI": {...}, "TOTAL": {...}}, chaque valeur un
     dict {valeur, rang, nb_total, part_pct}."""
+    etats_cible = etat_cible if isinstance(etat_cible, list) else [etat_cible]
+    est_groupe = len(etats_cible) > 1
+
     df = d.extraire(sources=["ISQ"], annees=annees, flux=["DE", "TI"], partenaires_b=etats_univers)
     if df.empty:
         vide = {"valeur": 0.0, "rang": None, "nb_total": len(etats_univers), "part_pct": 0.0}
@@ -546,8 +618,8 @@ def classement_commerce_total(annees: list[int], etats_univers: list[str],
     for flux_val in ("DE", "TI"):
         sous = totaux[totaux["flux"] == flux_val].set_index("partenaire")["valeur"]
         total_univers = sous.sum()
-        valeur_cible = float(sous.get(etat_cible, 0.0))
-        rang = int((sous > valeur_cible).sum()) + 1 if len(sous) else None
+        valeur_cible = float(sum(sous.get(e, 0.0) for e in etats_cible))
+        rang = None if est_groupe else (int((sous > valeur_cible).sum()) + 1 if len(sous) else None)
         resultat[flux_val] = {
             "valeur": valeur_cible, "rang": rang, "nb_total": len(etats_univers),
             "part_pct": (valeur_cible / total_univers * 100) if total_univers else 0.0,
@@ -555,8 +627,8 @@ def classement_commerce_total(annees: list[int], etats_univers: list[str],
 
     bilateral = totaux.groupby("partenaire")["valeur"].sum()
     total_univers_bi = bilateral.sum()
-    valeur_cible_bi = float(bilateral.get(etat_cible, 0.0))
-    rang_bi = int((bilateral > valeur_cible_bi).sum()) + 1 if len(bilateral) else None
+    valeur_cible_bi = float(sum(bilateral.get(e, 0.0) for e in etats_cible))
+    rang_bi = None if est_groupe else (int((bilateral > valeur_cible_bi).sum()) + 1 if len(bilateral) else None)
     resultat["TOTAL"] = {
         "valeur": valeur_cible_bi, "rang": rang_bi, "nb_total": len(etats_univers),
         "part_pct": (valeur_cible_bi / total_univers_bi * 100) if total_univers_bi else 0.0,

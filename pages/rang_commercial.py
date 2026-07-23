@@ -65,7 +65,8 @@ _COULEUR_HIGHLIGHT = "#1d6fd6"  # bleu -- QC dans les top10, ou #1 dans le top25
 _ICONE_HIGHLIGHT = "⚜️"
 
 
-def _html_leaderboard(lignes: list[dict], unite: str, libelle_colonne: str) -> str:
+def _html_leaderboard(lignes: list[dict], unite: str, libelle_colonne: str,
+                       decimales: int = 0) -> str:
     """Rendu HTML type 'site web' (liste/leaderboard), réutilisé pour le
     top 10 par produit ET le top 25 produits -- remplace le st.dataframe,
     jugé trop lourd (mini-tableur avec en-têtes/scrollbar) pour une liste
@@ -78,7 +79,7 @@ def _html_leaderboard(lignes: list[dict], unite: str, libelle_colonne: str) -> s
     icône ⚜️, pas seulement le texte -- pour rester visible même hors podium."""
     entete = (
         '<div style="display:flex; align-items:center; padding:0.2rem 0.6rem; '
-        'font-size:0.72rem; color:#8a909c; text-transform:uppercase; letter-spacing:0.03em;">'
+        'font-size:0.72rem; color:#000000; text-transform:uppercase; letter-spacing:0.03em;">'
         '<div style="flex:0 0 28px;"></div>'
         f'<div style="flex:1; margin-left:0.7rem;">{_html.escape(libelle_colonne)}</div>'
         f'<div>Valeur ({_html.escape(unite) if unite else "native"})</div>'
@@ -96,11 +97,11 @@ def _html_leaderboard(lignes: list[dict], unite: str, libelle_colonne: str) -> s
                       if highlight else "border-left:3px solid transparent;")
         poids = "700" if highlight else "400"
         titre_affiche = (f"{_ICONE_HIGHLIGHT} " if highlight else "") + _html.escape(str(titre))
-        valeur_fmt = f"{valeur:,.0f}".replace(",", "\u202f")
+        valeur_fmt = f"{valeur:,.{decimales}f}".replace(",", "\u202f")
 
         bloc_titre = f'<div style="font-weight:{poids};">{titre_affiche}</div>'
         if sous_titre:
-            bloc_titre += (f'<div style="font-size:0.72rem; color:#8a909c; margin-top:0.05rem;">'
+            bloc_titre += (f'<div style="font-size:0.72rem; color:#000000; margin-top:0.05rem;">'
                            f'{_html.escape(str(sous_titre))}</div>')
 
         blocs.append(
@@ -366,14 +367,19 @@ with st.sidebar:
         options_etats = sorted([noms_geo.get(c, c) for c, _ in entites_etats])
         libelle_vers_code = {noms_geo.get(c, c): c for c, _ in entites_etats}
 
-        if mode == "Preset Top25":
-            choix_etat = st.selectbox(
-                "État (un seul en mode Top25)", options=options_etats, key="rc_etat_unique",
-            )
-            etats_selectionnes = [libelle_vers_code[choix_etat]] if choix_etat else []
-        else:
-            choix_etats = st.multiselect("État(s)", options=options_etats, key="rc_etats_multi")
-            etats_selectionnes = [libelle_vers_code[c] for c in choix_etats]
+        choix_etats = st.multiselect(
+            "État(s) visé(s)", options=options_etats, key="rc_etats_multi",
+            help="Sélectionner PLUSIEURS états les traite comme un seul "
+                 "GROUPE fusionné (ex. Maine + Vermont) -- les échanges "
+                 "avec chacun sont additionnés d'abord, puis toute "
+                 "l'analyse (rang, top produits) porte sur ce total combiné "
+                 "-- pas une comparaison côte à côte des états individuels. "
+                 "Le groupe existe pour cette session seulement.",
+        )
+        etats_selectionnes = [libelle_vers_code[c] for c in choix_etats]
+        nom_groupe_etats = " + ".join(choix_etats) if len(etats_selectionnes) > 1 else None
+        if nom_groupe_etats:
+            st.caption(f"🔗 Groupe : **{nom_groupe_etats}** (fusionné, session seulement)")
 
     codes_sh4_selectionnes = None
     if mode == "Sélection personnalisée":
@@ -419,11 +425,11 @@ if lancer:
             st.warning(e)
     else:
         with st.status("Extraction en cours...", expanded=True) as statut:
+            nom_cible = nom_groupe_etats or noms_geo.get(etats_selectionnes[0], etats_selectionnes[0])
             if mode == "Preset Top25":
                 st.write(f"Détermination des 25 codes SH4 les plus importants pour "
-                         f"{noms_geo.get(etats_selectionnes[0], etats_selectionnes[0])} "
-                         f"(ISQ, séparément Fournisseur/DE et Client/TI)...")
-                codes_par_flux = top25_sh4_isq(annees_selectionnees, etats_selectionnes[0])
+                         f"{nom_cible} (ISQ, séparément Fournisseur/DE et Client/TI)...")
+                codes_par_flux = top25_sh4_isq(annees_selectionnees, etats_selectionnes)
                 st.write(f"Fournisseur (DE) : {len(codes_par_flux['DE'])} codes retenus : "
                          f"{', '.join(codes_par_flux['DE']) or '—'}")
                 st.write(f"Client (TI) : {len(codes_par_flux['TI'])} codes retenus : "
@@ -436,7 +442,8 @@ if lancer:
             # ses propres codes -- jamais les deux flux sur la même liste
             # (voir docstring de top25_sh4_isq pour le bug que ça évite).
             # extraire_et_classer() gère aussi l'harmonisation de devise
-            # avant classement (voir son docstring).
+            # avant classement, ET la fusion en groupe géographique si
+            # nom_groupe_etats est actif (voir son docstring).
             st.write("Ventilation provinciale (CIMT), substitution ISQ, "
                      "fournisseurs étrangers (Census), classement...")
             morceaux_provincial, morceaux_pays = [], []
@@ -444,7 +451,8 @@ if lancer:
                 if not codes_flux:
                     continue
                 dfp, dfy = extraire_et_classer(
-                    annees_selectionnees, flux_val, etats_selectionnes, codes_flux, devise_rc
+                    annees_selectionnees, flux_val, etats_selectionnes, codes_flux, devise_rc,
+                    nom_groupe_etats=nom_groupe_etats,
                 )
                 morceaux_provincial.append(dfp)
                 morceaux_pays.append(dfy)
@@ -458,25 +466,33 @@ if lancer:
             df_top10 = construire_top10_produit(df_resultat, df_pays, noms_geo)
 
             # ── VUE D'ENSEMBLE -- indépendante de la sélection Top25/
-            # personnalisée en cours, toujours "tous produits" ISQ pour le
-            # premier état sélectionné (voir plan_action_rang_commercial.txt
-            # section 4). ────────────────────────────────────────────────
+            # personnalisée en cours, toujours "tous produits" ISQ. Supporte
+            # les groupes d'états : sommer d'abord tous les flux identiques
+            # (SH6 × année × flux) des états du groupe -- top_produits_isq
+            # et classement_commerce_total le font nativement (groupby sans
+            # distinguer l'état d'origine) -- puis classer sur ce total.
+            # Le RANG parmi les 54 devient N/A pour un groupe (pas
+            # comparable un-contre-un à une entité individuelle), mais la
+            # part % du marché total US reste calculable et affichée. ────
             st.write("Vue d'ensemble : top 5 tous produits, classement "
                      "inter-états, catégories fixes...")
             etat_ve = etats_selectionnes[0]
             top5 = {
-                "DE": top_produits_isq(annees_selectionnees, etat_ve, "DE", devise_rc, 5),
-                "TI": top_produits_isq(annees_selectionnees, etat_ve, "TI", devise_rc, 5),
+                "DE": top_produits_isq(annees_selectionnees, etats_selectionnes, "DE", devise_rc, 5),
+                "TI": top_produits_isq(annees_selectionnees, etats_selectionnes, "TI", devise_rc, 5),
             }
             etats_univers = [c for c, t in d.lister_entites_cote("CIMT", "b") if t == "ETAT_US"]
-            classement_total = classement_commerce_total(annees_selectionnees, etats_univers, etat_ve, devise_rc)
+            classement_total = classement_commerce_total(
+                annees_selectionnees, etats_univers, etats_selectionnes, devise_rc
+            )
 
             categories_resultat: dict[str, dict[str, pd.DataFrame]] = {}
             for nom_cat, codes_cat in CATEGORIES_FIXES.items():
                 categories_resultat[nom_cat] = {}
                 for flux_val in ("DE", "TI"):
                     dfp_cat, dfy_cat = extraire_et_classer(
-                        annees_selectionnees, flux_val, [etat_ve], codes_cat, devise_rc
+                        annees_selectionnees, flux_val, etats_selectionnes, codes_cat,
+                        devise_rc, nom_groupe_etats=nom_groupe_etats,
                     )
                     df_detail_cat = construire_detail_produit(dfp_cat, dfy_cat, noms_geo)
                     dfp_agg, dfy_agg = agreger_categorie(dfp_cat, dfy_cat, f"Total {nom_cat}")
@@ -495,6 +511,7 @@ if lancer:
         st.session_state["rc_classement_total"] = classement_total
         st.session_state["rc_categories"] = categories_resultat
         st.session_state["rc_etat_ve"] = etat_ve
+        st.session_state["rc_nom_groupe_etats"] = nom_groupe_etats
         # Gèle la devise utilisée POUR CETTE EXTRACTION -- ne doit plus
         # bouger tant qu'une nouvelle extraction n'est pas lancée, même si
         # le widget "rc_devise" change entre-temps (voir usage de
@@ -508,21 +525,27 @@ top5 = st.session_state.get("rc_top5", {})
 classement_total = st.session_state.get("rc_classement_total", {})
 categories_resultat = st.session_state.get("rc_categories", {})
 etat_ve = st.session_state.get("rc_etat_ve")
+nom_groupe_etats_actif = st.session_state.get("rc_nom_groupe_etats")
 devise_resultat = st.session_state.get("rc_devise_resultat", "USD")
 
 
 def _afficher_vue_ensemble(top5: dict, classement_total: dict, categories_resultat: dict,
-                            etat_ve: str, unite: str, noms_geo: dict) -> None:
+                            etat_ve: str, unite: str, noms_geo: dict,
+                            nom_groupe_etats_actif: str | None = None) -> None:
     """Vue d'ensemble -- indépendante de la sélection Top25/personnalisée en
-    cours, toujours 'tous produits' (ISQ) pour le premier état sélectionné.
-    Top 5 export/import + commerce total TOUJOURS affichés ensemble (pas
-    scindés Fournisseur/Client) ; seules les catégories fixes changent de
-    sens, via leurs propres sous-onglets."""
+    cours, toujours 'tous produits' (ISQ). Supporte les groupes d'états
+    (nom_groupe_etats_actif) : top5/classement/catégories portent alors sur
+    le total combiné des états du groupe -- le rang parmi les 54
+    juridictions devient N/A (non comparable un-contre-un), mais la part %
+    du marché total US reste affichée. Top 5 export/import + commerce
+    total TOUJOURS affichés ensemble (pas scindés Fournisseur/Client) ;
+    seules les catégories fixes changent de sens, via leurs propres
+    sous-onglets."""
     if not top5 or not classement_total:
         st.info("Configure tes filtres dans la barre latérale, puis clique **Extraire**.")
         return
 
-    nom_etat = noms_geo.get(etat_ve, etat_ve)
+    nom_etat = nom_groupe_etats_actif or noms_geo.get(etat_ve, etat_ve)
     st.subheader(f"Commerce Québec ↔ {nom_etat} — tous produits")
 
     col_exp, col_imp = st.columns(2)
@@ -538,15 +561,21 @@ def _afficher_vue_ensemble(top5: dict, classement_total: dict, categories_result
                     st.info("Aucune donnée.")
                 else:
                     lignes5 = [
-                        {"rang": i + 1, "titre": f"SH4 {r.hs6}", "valeur": r.valeur}
+                        {"rang": i + 1, "titre": f"SH4 {r.hs6}", "valeur": r.valeur / 1e6}
                         for i, r in enumerate(df5.itertuples())
                     ]
-                    st.markdown(_html_leaderboard(lignes5, unite, "Produit"), unsafe_allow_html=True)
+                    st.markdown(
+                        _html_leaderboard(lignes5, f"M$ {unite}", "Produit", decimales=1),
+                        unsafe_allow_html=True,
+                    )
 
     with st.container(key="rc_ve_total", border=True):
-        st.markdown(f"**Commerce total avec {nom_etat}** — tous produits, "
-                    "parmi les 54 juridictions américaines (50 états + D.C. "
-                    "+ Porto Rico + Îles Vierges + Autres États non identifiés)")
+        st.markdown(f"**Commerce total avec {nom_etat}**")
+        st.caption(
+            "ℹ️ Méthodologie", help="Tous produits, parmi les 54 juridictions "
+            "américaines (50 états + D.C. + Porto Rico + Îles Vierges + "
+            "Autres États non identifiés).",
+        )
         c1, c2, c3 = st.columns(3)
         for col, cle_flux, label in [
             (c1, "DE", "Exportations QC → état"), (c2, "TI", "Importations QC ← état"),
@@ -556,7 +585,12 @@ def _afficher_vue_ensemble(top5: dict, classement_total: dict, categories_result
             with col:
                 st.metric(label, f"{info.get('valeur', 0) / 1e9:,.2f} G$ {unite}")
                 rang, nb_total = info.get("rang"), info.get("nb_total", 54)
-                st.caption(f"Rang #{rang}/{nb_total} · {info.get('part_pct', 0):.2f} % du total US")
+                libelle_rang = f"Rang #{rang}/{nb_total}" if rang is not None else "Rang N/A (groupe)"
+                st.markdown(
+                    f'<span style="font-size:0.8rem; color:#000000;">'
+                    f'{libelle_rang} · {info.get("part_pct", 0):.2f} % du total US</span>',
+                    unsafe_allow_html=True,
+                )
 
     st.divider()
     st.markdown("### Catégories fixes")
@@ -611,4 +645,4 @@ else:
                              annees_selectionnees, noms_geo, devise_resultat)
     with onglet_vue_ensemble:
         _afficher_vue_ensemble(top5, classement_total, categories_resultat,
-                                etat_ve, unite, noms_geo)
+                                etat_ve, unite, noms_geo, nom_groupe_etats_actif)

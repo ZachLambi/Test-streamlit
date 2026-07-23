@@ -424,6 +424,9 @@ def afficher_onglet_directionnel(source: str) -> None:
             st.session_state[f"{cle_session}_devise"] = devise_cible
 
     _afficher_resultats(source, cle_session)
+
+
+def afficher_onglet_symetrique(source: str) -> None:
     """BACI — pays-à-pays, deux sélecteurs indépendants pour choisir une
     paire. Filtres dans la sidebar, résultats en pleine largeur."""
 
